@@ -71,3 +71,4 @@ migration_log*.txt
 migration_avance_log.txt
 import_base*_log.txt
 schema_final.txt
+.gstack/

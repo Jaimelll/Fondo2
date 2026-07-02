@@ -1,6 +1,5 @@
 import type { Metadata } from 'next'
 import './globals.css'
-import SupabaseProvider from '@/components/SupabaseProvider'
 
 export const metadata: Metadata = {
   title: 'Sistema FONDOEMPLEO',
@@ -15,9 +14,7 @@ export default function RootLayout({
   return (
     <html lang="es" suppressHydrationWarning={true}>
       <body>
-        <SupabaseProvider>
-          {children}
-        </SupabaseProvider>
+        {children}
       </body>
     </html>
   )

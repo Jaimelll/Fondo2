@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { unstable_noStore as noStore } from 'next/cache';
 import { Database } from 'lucide-react';
-import { createClient } from '@/utils/supabase/server';
+import { getSession } from '@/lib/session';
 import { getNormalizedEmail, SUPER_ADMIN } from '@/config/permissions';
 import { TABLAS, etiquetaTabla } from './tablas';
 import { getConteo } from './actions';
@@ -14,11 +14,8 @@ export default async function CatalogosPage() {
     noStore();
 
     // Guarda de página: solo el super admin (defensa en profundidad).
-    const supabase = await createClient();
-    const {
-        data: { user },
-    } = await supabase.auth.getUser();
-    if (getNormalizedEmail(user?.email) !== SUPER_ADMIN) {
+    const session = await getSession();
+    if (getNormalizedEmail(session?.user.email) !== SUPER_ADMIN) {
         redirect('/dashboard');
     }
 

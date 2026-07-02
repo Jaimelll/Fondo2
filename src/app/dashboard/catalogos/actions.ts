@@ -10,8 +10,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createClient } from '@supabase/supabase-js';
-import { createClient as createSSRClient } from '@/utils/supabase/server';
 import { revalidatePath } from 'next/cache';
+import { getSession } from '@/lib/session';
 import { getNormalizedEmail, SUPER_ADMIN } from '@/config/permissions';
 import { esTablaValida, type Columna } from './tablas';
 
@@ -24,11 +24,8 @@ function getAdminSupabase() {
 
 /** Lanza si el usuario actual no es el super admin. */
 async function assertSuperAdmin() {
-    const supabase = await createSSRClient();
-    const {
-        data: { user },
-    } = await supabase.auth.getUser();
-    if (getNormalizedEmail(user?.email) !== SUPER_ADMIN) {
+    const session = await getSession();
+    if (getNormalizedEmail(session?.user.email) !== SUPER_ADMIN) {
         throw new Error('No autorizado: este módulo es solo para el super admin.');
     }
 }

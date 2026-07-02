@@ -1,34 +1,16 @@
 "use client";
 
 import { LayoutDashboard, FolderOpen, Users, LogOut, Menu, BookOpen, Database } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { clsx } from 'clsx';
 
-import { createClient } from '@/utils/supabase/client';
-import { getModulosVisibles, getNormalizedEmail, SUPER_ADMIN } from '@/config/permissions';
+import { getNormalizedEmail, tieneAccesoModulo, SUPER_ADMIN, type Modulos } from '@/config/permissions';
 
-export function Sidebar() {
+export function Sidebar({ email, modulos }: { email: string; modulos: Modulos }) {
     const pathname = usePathname();
     const [isOpen, setIsOpen] = useState(false);
-    const [user, setUser] = useState<any>(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const supabase = createClient();
-
-    useEffect(() => {
-        const getUser = async () => {
-            try {
-                const { data: { user } } = await supabase.auth.getUser();
-                setUser(user);
-            } catch (err) {
-                // Silently handle
-            } finally {
-                setIsLoading(false);
-            }
-        };
-        getUser();
-    }, [supabase.auth]);
 
     const allMenuItems: { name: string; icon: typeof LayoutDashboard; href: string; superAdminOnly?: boolean }[] = [
         { name: 'Inf. Gerencial', icon: LayoutDashboard, href: '/dashboard/inf-gerencial' },
@@ -42,19 +24,10 @@ export function Sidebar() {
     ];
 
     // Filtrar los items visibles según los módulos permitidos del usuario
-    const getMenuItems = (email: string | null | undefined) => {
-        const esSuperAdmin = getNormalizedEmail(email) === SUPER_ADMIN;
-        // Items marcados superAdminOnly solo se muestran al super admin.
-        const visibles = allMenuItems.filter(item => !item.superAdminOnly || esSuperAdmin);
-
-        const modulosVisibles = getModulosVisibles(email);
-        if (modulosVisibles === 'ALL') return visibles;
-
-        // Comparación robusta para evitar problemas de espacios o acentos
-        return visibles.filter(item =>
-            modulosVisibles.some(m => m.trim().toLowerCase() === item.name.trim().toLowerCase())
-        );
-    };
+    const esSuperAdmin = getNormalizedEmail(email) === SUPER_ADMIN;
+    const itemsFinales = allMenuItems
+        .filter(item => !item.superAdminOnly || esSuperAdmin)
+        .filter(item => esSuperAdmin || tieneAccesoModulo(modulos, item.name));
 
     return (
         <>
@@ -67,7 +40,7 @@ export function Sidebar() {
 
             {/* Backdrop for mobile */}
             {isOpen && (
-                <div 
+                <div
                     className="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 lg:hidden"
                     onClick={() => setIsOpen(false)}
                 />
@@ -82,37 +55,33 @@ export function Sidebar() {
                 <div className="p-6 border-b border-primary-light flex flex-col justify-center items-center h-24 bg-primary-dark/30">
                     <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-1 font-bold">Autenticado como:</div>
                     <div className="text-sm font-bold text-white truncate w-full text-center px-2">
-                        {user?.email || (isLoading ? 'Cargando sesión...' : 'Sesión no iniciada')}
+                        {email}
                     </div>
                 </div>
 
                 <nav className="flex-1 p-4 space-y-1">
-                    {(() => {
-                        const itemsFinales = getMenuItems(user?.email);
-
-                        return itemsFinales.map((item) => {
-                            const Icon = item.icon;
-                            const isActive = pathname === item.href;
-                            return (
-                                <Link
-                                    key={item.name}
-                                    href={item.href}
-                                    className={clsx(
-                                        "flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors",
-                                        isActive
-                                            ? "bg-accent text-white"
-                                            : "text-gray-300 hover:bg-primary-light hover:text-white"
-                                    )}
-                                    onClick={() => setIsOpen(false)}
-                                >
-                                    <Icon className="w-5 h-5" />
-                                    <span className="font-medium">
-                                        {item.name}
-                                    </span>
-                                </Link>
-                            );
-                        });
-                    })()}
+                    {itemsFinales.map((item) => {
+                        const Icon = item.icon;
+                        const isActive = pathname === item.href;
+                        return (
+                            <Link
+                                key={item.name}
+                                href={item.href}
+                                className={clsx(
+                                    "flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors",
+                                    isActive
+                                        ? "bg-accent text-white"
+                                        : "text-gray-300 hover:bg-primary-light hover:text-white"
+                                )}
+                                onClick={() => setIsOpen(false)}
+                            >
+                                <Icon className="w-5 h-5" />
+                                <span className="font-medium">
+                                    {item.name}
+                                </span>
+                            </Link>
+                        );
+                    })}
                 </nav>
 
                 <div className="p-4 border-t border-primary-light">

@@ -1,5 +1,5 @@
-import { createClient } from "@/utils/supabase/server";
 import { redirect } from "next/navigation";
+import { auth } from "@/lib/auth";
 
 export default async function LoginPage({
   searchParams,
@@ -13,18 +13,17 @@ export default async function LoginPage({
     "use server";
     const email = String(formData.get("email"));
     const password = String(formData.get("password"));
-    const supabase = await createClient();
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
-      redirect("/auth/login?error=CredencialesInvalidas");
+    // La cookie de sesión (httpOnly) la setea el plugin nextCookies de
+    // Better-Auth al resolver signInEmail dentro de esta server action.
+    let ok = true;
+    try {
+      await auth.api.signInEmail({ body: { email, password } });
+    } catch {
+      ok = false;
     }
 
-    redirect("/dashboard");
+    redirect(ok ? "/dashboard" : "/auth/login?error=CredencialesInvalidas");
   };
 
   return (

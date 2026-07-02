@@ -1,30 +1,28 @@
-import { createClient } from '@/utils/supabase/server';
+import { headers } from 'next/headers';
 import { NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 
-export async function POST(request: Request) {
+async function signOutAndRedirect(request: Request) {
     const host = request.headers.get('host');
     const protocol = request.headers.get('x-forwarded-proto') || 'http';
     const base = `${protocol}://${host}`;
-    const supabase = await createClient();
 
-    // Sign out on the server side (clears httpOnly cookies)
-    await supabase.auth.signOut();
+    // Revoca la sesión en la base y limpia la cookie httpOnly (nextCookies).
+    try {
+        await auth.api.signOut({ headers: await headers() });
+    } catch {
+        // Sin sesión activa: igual redirigimos al login.
+    }
 
     return NextResponse.redirect(new URL('/', base), {
         status: 302,
     });
 }
 
+export async function POST(request: Request) {
+    return signOutAndRedirect(request);
+}
+
 export async function GET(request: Request) {
-    const host = request.headers.get('host');
-    const protocol = request.headers.get('x-forwarded-proto') || 'http';
-    const base = `${protocol}://${host}`;
-    const supabase = await createClient();
-
-    // Sign out on the server side (clears httpOnly cookies)
-    await supabase.auth.signOut();
-
-    return NextResponse.redirect(new URL('/', base), {
-        status: 302,
-    });
+    return signOutAndRedirect(request);
 }
