@@ -8,15 +8,15 @@ export const SUPER_ADMIN = 'jduran@fondoempleo.com.pe';
 export const MODULOS_POR_USUARIO: Record<string, string[] | 'ALL'> = {
     'jduran@fondoempleo.com.pe': 'ALL',
     'invitado@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios'],
-    'rcarbajal@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios', 'Documentos', 'Gestión de Proyectos', 'Gestión de Servicios', 'Gestión de Aportantes', 'Supervisión', 'Gestión de Monitores'],
-    'pricra@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios', 'Gestión de Monitores', 'Gestión de Aportantes'],
-    'herique@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios', 'Gestión de Monitores'],
+    'rcarbajal@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios', 'Documentos', 'Gestión de Proyectos', 'Gestión de Servicios', 'Gestión de Aportantes'],
+    'pricra@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios', 'Gestión de Aportantes'],
+    'herique@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios'],
     'arojas@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios', 'Gestión de Proyectos', 'Gestión de Servicios'],
-    'erizabal@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios', 'Gestión de Monitores', 'Supervisión', 'Gestión de Proyectos', 'Gestión de Servicios'],
-    'jleclere@fondoempleo.com.pe': ['Proyectos', 'Supervisión'],
-    'jbozzo@fondoempleo.com.pe': ['Proyectos', 'Supervisión'],
+    'erizabal@fondoempleo.com.pe': ['Inf. Gerencial', 'Proyectos', 'Servicios', 'Gestión de Proyectos', 'Gestión de Servicios'],
+    'jleclere@fondoempleo.com.pe': ['Proyectos'],
+    'jbozzo@fondoempleo.com.pe': ['Proyectos'],
     'emoya@fondoempleo.com.pe': ['Servicios', 'Gestión de Servicios'],
-    'hmeza@fondoempleo.com.pe': ['Proyectos', 'Servicios', 'Evaluación'],
+    'hmeza@fondoempleo.com.pe': ['Proyectos', 'Servicios'],
 };
 
 // Mapa de módulo → ruta principal (para validación en middleware)
@@ -24,10 +24,7 @@ export const RUTA_POR_MODULO: Record<string, string> = {
     'Inf. Gerencial': '/dashboard/inf-gerencial',
     'Proyectos': '/dashboard',
     'Servicios': '/dashboard/servicios',
-    'Supervisión': '/dashboard/campo',
-    'Gestión de Monitores': '/dashboard/gestion-monitores',
     'Documentos': '/dashboard/documentos',
-    'Evaluación': '/dashboard/evaluacion',
     'Gestión de Proyectos': '/dashboard/gestion-proyectos',
     'Gestión de Servicios': '/dashboard/gestion-servicios',
     'Gestión de Aportantes': '/dashboard/gestion-aportantes',
@@ -66,13 +63,6 @@ export function getModulosVisibles(email: string | null | undefined): string[] |
     const permisos = MODULOS_POR_USUARIO[norm];
     if (!permisos) return []; // usuario no conocido → sin acceso
     return permisos;
-}
-
-/** Devuelve true si el usuario puede realizar acciones de evaluación */
-export function puedeRealizarAccionesEvaluacion(email: string | null | undefined): boolean {
-    const norm = getNormalizedEmail(email);
-    if (norm === 'hmeza@fondoempleo.com.pe') return false;
-    return true; // jduran y otros permitidos por defecto (u otra lógica futura)
 }
 
 /** Devuelve true si la ruta pathname está permitida para el usuario */

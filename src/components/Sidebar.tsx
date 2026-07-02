@@ -1,6 +1,6 @@
 "use client";
 
-import { LayoutDashboard, FolderOpen, Users, LogOut, Menu, ClipboardCheck, BookOpen, Database } from 'lucide-react';
+import { LayoutDashboard, FolderOpen, Users, LogOut, Menu, BookOpen, Database } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -34,10 +34,7 @@ export function Sidebar() {
         { name: 'Inf. Gerencial', icon: LayoutDashboard, href: '/dashboard/inf-gerencial' },
         { name: 'Proyectos', icon: LayoutDashboard, href: '/dashboard' },
         { name: 'Servicios', icon: FolderOpen, href: '/dashboard/servicios' },
-        { name: 'Supervisión', icon: ClipboardCheck, href: '/dashboard/campo' },
-        { name: 'Gestión de Monitores', icon: ClipboardCheck, href: '/dashboard/gestion-monitores' },
         { name: 'Documentos', icon: FolderOpen, href: '/dashboard/documentos' },
-        { name: 'Evaluación', icon: ClipboardCheck, href: '/dashboard/evaluacion' },
         { name: 'Gestión de Proyectos', icon: FolderOpen, href: '/dashboard/gestion-proyectos' },
         { name: 'Gestión de Servicios', icon: BookOpen, href: '/dashboard/gestion-servicios' },
         { name: 'Gestión de Aportantes', icon: Users, href: '/dashboard/gestion-aportantes' },
@@ -110,7 +107,7 @@ export function Sidebar() {
                                 >
                                     <Icon className="w-5 h-5" />
                                     <span className="font-medium">
-                                        {item.name === 'Supervisión' ? 'Monitoreo' : item.name}
+                                        {item.name}
                                     </span>
                                 </Link>
                             );
