@@ -1,0 +1,135 @@
+"use client";
+
+import { LayoutDashboard, FolderOpen, Users, LogOut, Menu, ClipboardCheck, BookOpen, Database } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { clsx } from 'clsx';
+
+import { createClient } from '@/utils/supabase/client';
+import { getModulosVisibles, getNormalizedEmail, SUPER_ADMIN } from '@/config/permissions';
+
+export function Sidebar() {
+    const pathname = usePathname();
+    const [isOpen, setIsOpen] = useState(false);
+    const [user, setUser] = useState<any>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const supabase = createClient();
+
+    useEffect(() => {
+        const getUser = async () => {
+            try {
+                const { data: { user } } = await supabase.auth.getUser();
+                setUser(user);
+            } catch (err) {
+                // Silently handle
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        getUser();
+    }, [supabase.auth]);
+
+    const allMenuItems: { name: string; icon: typeof LayoutDashboard; href: string; superAdminOnly?: boolean }[] = [
+        { name: 'Inf. Gerencial', icon: LayoutDashboard, href: '/dashboard/inf-gerencial' },
+        { name: 'Proyectos', icon: LayoutDashboard, href: '/dashboard' },
+        { name: 'Servicios', icon: FolderOpen, href: '/dashboard/servicios' },
+        { name: 'Supervisión', icon: ClipboardCheck, href: '/dashboard/campo' },
+        { name: 'Gestión de Monitores', icon: ClipboardCheck, href: '/dashboard/gestion-monitores' },
+        { name: 'Documentos', icon: FolderOpen, href: '/dashboard/documentos' },
+        { name: 'Evaluación', icon: ClipboardCheck, href: '/dashboard/evaluacion' },
+        { name: 'Gestión de Proyectos', icon: FolderOpen, href: '/dashboard/gestion-proyectos' },
+        { name: 'Gestión de Servicios', icon: BookOpen, href: '/dashboard/gestion-servicios' },
+        { name: 'Gestión de Aportantes', icon: Users, href: '/dashboard/gestion-aportantes' },
+        { name: 'Catálogos', icon: Database, href: '/dashboard/catalogos', superAdminOnly: true },
+    ];
+
+    // Filtrar los items visibles según los módulos permitidos del usuario
+    const getMenuItems = (email: string | null | undefined) => {
+        const esSuperAdmin = getNormalizedEmail(email) === SUPER_ADMIN;
+        // Items marcados superAdminOnly solo se muestran al super admin.
+        const visibles = allMenuItems.filter(item => !item.superAdminOnly || esSuperAdmin);
+
+        const modulosVisibles = getModulosVisibles(email);
+        if (modulosVisibles === 'ALL') return visibles;
+
+        // Comparación robusta para evitar problemas de espacios o acentos
+        return visibles.filter(item =>
+            modulosVisibles.some(m => m.trim().toLowerCase() === item.name.trim().toLowerCase())
+        );
+    };
+
+    return (
+        <>
+            <button
+                className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-white rounded-md shadow-md"
+                onClick={() => setIsOpen(!isOpen)}
+            >
+                <Menu className="w-6 h-6" />
+            </button>
+
+            {/* Backdrop for mobile */}
+            {isOpen && (
+                <div 
+                    className="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 lg:hidden"
+                    onClick={() => setIsOpen(false)}
+                />
+            )}
+
+            <div className={clsx(
+                "fixed inset-y-0 left-0 bg-primary w-72 text-white transition-transform duration-300 transform z-40 flex flex-col",
+                isOpen ? "translate-x-0" : "-translate-x-full",
+                "lg:translate-x-0 lg:static"
+            )}>
+                {/* Identity Area */}
+                <div className="p-6 border-b border-primary-light flex flex-col justify-center items-center h-24 bg-primary-dark/30">
+                    <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-1 font-bold">Autenticado como:</div>
+                    <div className="text-sm font-bold text-white truncate w-full text-center px-2">
+                        {user?.email || (isLoading ? 'Cargando sesión...' : 'Sesión no iniciada')}
+                    </div>
+                </div>
+
+                <nav className="flex-1 p-4 space-y-1">
+                    {(() => {
+                        const itemsFinales = getMenuItems(user?.email);
+
+                        return itemsFinales.map((item) => {
+                            const Icon = item.icon;
+                            const isActive = pathname === item.href;
+                            return (
+                                <Link
+                                    key={item.name}
+                                    href={item.href}
+                                    className={clsx(
+                                        "flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors",
+                                        isActive
+                                            ? "bg-accent text-white"
+                                            : "text-gray-300 hover:bg-primary-light hover:text-white"
+                                    )}
+                                    onClick={() => setIsOpen(false)}
+                                >
+                                    <Icon className="w-5 h-5" />
+                                    <span className="font-medium">
+                                        {item.name === 'Supervisión' ? 'Monitoreo' : item.name}
+                                    </span>
+                                </Link>
+                            );
+                        });
+                    })()}
+                </nav>
+
+                <div className="p-4 border-t border-primary-light">
+                    <form action="/auth/signout" method="post">
+                        <button
+                            type="submit"
+                            className="w-full text-left flex items-center space-x-3 px-4 py-3 text-gray-300 hover:text-white hover:bg-primary-light rounded-lg transition-colors"
+                        >
+                            <LogOut className="w-5 h-5" />
+                            <span className="font-medium">Cerrar Sesión</span>
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </>
+    );
+}

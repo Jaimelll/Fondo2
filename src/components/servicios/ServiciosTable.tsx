@@ -1,0 +1,183 @@
+"use client";
+
+import { useMemo } from 'react';
+import { clsx } from 'clsx';
+
+interface ServiciosTableProps {
+    data: any[];
+    loading: boolean;
+    groupStartDate?: number | null;   // timestamp del grupo (opcional)
+    groupEndDate?: number | null;     // timestamp del grupo (opcional)
+    onViewDetails?: (id: number) => void;
+    loadingId?: number | null;
+}
+
+// Stage colours — kept in sync with ServiciosTimeline
+const STAGE_COLORS: Record<number, string> = {
+    1: '#60a5fa',
+    2: '#34d399',
+    3: '#fbbf24',
+    4: '#a78bfa',
+    5: '#f472b6',
+    6: '#f43f5e',
+    7: '#94a3b8',
+};
+
+export function ServiciosTable({ data, loading, groupStartDate, groupEndDate, onViewDetails, loadingId }: ServiciosTableProps) {
+    const sortedData = useMemo(() => {
+        return [...data].sort((a, b) => a.id - b.id);
+    }, [data]);
+
+    const fmtDate = (ts: number | null | undefined) => {
+        if (!ts || isNaN(ts)) return '-';
+        const d = new Date(ts);
+        return `${d.getUTCDate().toString().padStart(2, '0')}/${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCFullYear()}`;
+    };
+
+    const COLS = 10;
+
+    return (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden transition-all duration-500">
+            <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                    <thead>
+                        <tr className="bg-gray-100 border-b-2 border-gray-200 text-gray-700 text-sm uppercase font-extrabold tracking-widest">
+                            <th className="px-4 py-3">ID</th>
+                            <th className="px-4 py-3 min-w-[200px]">Nombre de Servicio</th>
+                            <th className="px-4 py-3">Institución</th>
+                            <th className="px-4 py-3 min-w-[150px]">Carrera / Especialidad</th>
+                            <th className="px-4 py-3">Estado</th>
+                            <th className="px-4 py-3 text-right">Presupuesto</th>
+                            <th className="px-4 py-3 text-right">Avance</th>
+                            <th className="px-4 py-3 text-center">%</th>
+                            <th className="px-4 py-3 text-center">Inicio</th>
+                            <th className="px-4 py-3 text-center">Fin</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                        {loading ? (
+                            Array.from({ length: 8 }).map((_, i) => (
+                                <tr key={i} className="animate-pulse">
+                                    <td colSpan={COLS} className="px-3 py-2 h-9 bg-gray-50/10" />
+                                </tr>
+                            ))
+                        ) : sortedData.length === 0 ? (
+                            <tr>
+                                <td colSpan={COLS} className="px-3 py-8 text-center text-gray-400 text-sm italic">
+                                    No se encontraron servicios para mostrar.
+                                </td>
+                            </tr>
+                        ) : (
+                            sortedData.map((item, idx) => {
+                                const presupuestado = Number(item.presupuesto) || 0;
+                                const avance = Number(item.avance) || 0;
+                                const progress = presupuestado > 0 ? (avance / presupuestado) * 100 : 0;
+                                const etapaId = item.etapa_id ?? 0;
+                                const etapaNombre = item.etapa?.descripcion || `Etapa ${etapaId}`;
+                                const etapaColor = STAGE_COLORS[etapaId] ?? '#94a3b8';
+
+                                // Obtener fechas individuales para etapa 5 (Inicio / Ejecución) y etapa 6 (Fin / Ejecutado)
+                                const avanceEjecucion = item.fecha_ejecucion || item.avances?.find((a: any) => Number(a.etapa_id) === 5)?.fecha;
+                                const avanceEjecutado = item.fecha_ejecutado || item.avances?.find((a: any) => Number(a.etapa_id) === 6)?.fecha;
+
+                                const fechaInicio = avanceEjecucion 
+                                    ? new Date(avanceEjecucion).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC' }) 
+                                    : '-';
+                                const fechaFin = avanceEjecutado 
+                                    ? new Date(avanceEjecutado).toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC' }) 
+                                    : '-';
+
+                                return (
+                                    <tr
+                                        key={item.id}
+                                        className={clsx(
+                                            "hover:bg-blue-50/30 transition-colors group text-sm",
+                                            idx % 2 === 0 ? "bg-white" : "bg-gray-50/20"
+                                        )}
+                                    >
+                                        <td 
+                                            className="px-4 py-3 font-bold text-blue-600 tabular-nums whitespace-nowrap cursor-pointer hover:underline"
+                                            onClick={() => onViewDetails?.(item.id)}
+                                        >
+                                            {loadingId === item.id ? (
+                                                <div className="flex items-center gap-1.5 text-blue-600">
+                                                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                    </svg>
+                                                    <span className="text-xs uppercase tracking-tighter">...</span>
+                                                </div>
+                                            ) : item.id}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <div
+                                                className="font-bold text-gray-800 line-clamp-1 group-hover:text-blue-700 transition-colors"
+                                                title={item.nombre}
+                                            >
+                                                {item.nombre}
+                                            </div>
+                                            <div className="text-xs text-gray-400 mt-0.5 tracking-tighter uppercase font-medium">
+                                                {item.documento || 'PENDIENTE'}
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3 text-gray-600 font-medium whitespace-nowrap">
+                                            {item.institucion?.descripcion || '-'}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <div className="text-xs font-bold text-slate-700 line-clamp-2 max-w-[180px] leading-tight uppercase italic" title={item.especialidad}>
+                                                {item.especialidad || '-'}
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <span
+                                                className="px-3 py-1 rounded-full text-xs font-black uppercase tracking-wide text-white whitespace-nowrap"
+                                                style={{ backgroundColor: etapaColor }}
+                                            >
+                                                {etapaNombre}
+                                            </span>
+                                        </td>
+                                        <td className="px-4 py-3 text-right font-bold text-blue-900 tabular-nums whitespace-nowrap">
+                                            S/ {presupuestado.toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                        </td>
+                                        <td className="px-4 py-3 text-right font-bold text-emerald-700 tabular-nums whitespace-nowrap">
+                                            S/ {avance.toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                        </td>
+                                        <td className="px-4 py-3 text-center">
+                                            <span className={clsx(
+                                                "px-2 py-1 rounded-full font-bold text-xs min-w-[45px] inline-block ring-1 ring-inset",
+                                                progress >= 100
+                                                    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                                                    : progress > 50
+                                                        ? "bg-blue-50 text-blue-700 ring-blue-200"
+                                                        : "bg-orange-50 text-orange-700 ring-orange-200"
+                                            )}>
+                                                {progress.toFixed(1)}%
+                                            </span>
+                                        </td>
+                                        <td className="px-4 py-3 text-center text-gray-500 font-bold tabular-nums whitespace-nowrap">
+                                            {fechaInicio}
+                                        </td>
+                                        <td className="px-4 py-3 text-center text-gray-500 font-bold tabular-nums whitespace-nowrap">
+                                            {fechaFin}
+                                        </td>
+                                    </tr>
+                                );
+                            })
+                        )}
+                    </tbody>
+                </table>
+            </div>
+
+            {!loading && sortedData.length > 0 && (
+                <div className="px-6 py-3 bg-gray-50 border-t border-gray-100 flex justify-between items-center">
+                    <span className="text-xs text-gray-400 font-extrabold uppercase tracking-widest">
+                        Total
+                    </span>
+                    <span className="text-xs text-gray-500 font-bold">
+                        {sortedData.length} servicios listados
+                    </span>
+                </div>
+            )}
+        </div>
+    );
+}

@@ -1,0 +1,133 @@
+'use client'
+import { useState, useEffect } from 'react'
+import { createClient } from '@/utils/supabase/client'
+import { Navbar } from '@/components/Navbar'
+import { Footer } from '@/components/Footer'
+
+export default function EdicionPage() {
+    const supabase = createClient()
+    const [projects, setProjects] = useState<any[]>([])
+    const [selectedId, setSelectedId] = useState('')
+    const [formData, setFormData] = useState<any>(null)
+    const [loading, setLoading] = useState(false)
+    const [message, setMessage] = useState('')
+
+    useEffect(() => {
+        fetchProjects()
+    }, [])
+
+    useEffect(() => {
+        if (selectedId) loadProjectDetails(selectedId)
+        else setFormData(null)
+    }, [selectedId, supabase])
+
+    const fetchProjects = async () => {
+        const data: any[] = [];
+    }
+
+    const loadProjectDetails = async (id: string) => {
+        const p: any = {};
+        const m: any = {};
+
+        setFormData({
+            monto_fondoempleo: m?.monto_fondoempleo || 0,
+            avance: m?.avance || 0,
+            metricas_id: m?.id
+        })
+    }
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault()
+        setLoading(true)
+        setMessage('');
+
+        // Update Metricas - UPSERT logic manually
+        let errM = null
+        const metricUpdates = {
+            proyecto_id: selectedId,
+            monto_fondoempleo: parseFloat(formData.monto_fondoempleo),
+            avance: parseFloat(formData.avance)
+        }
+
+        if (formData.metricas_id) {
+            const { error } = await supabase.from('metricas').update(metricUpdates).eq('id', formData.metricas_id)
+            errM = error
+        } else {
+            const { error } = await supabase.from('metricas').insert(metricUpdates)
+            errM = error
+        }
+
+        if (!errM) {
+            setMessage('Actualización exitosa. Registrado en auditoría.')
+            // Reload to ensure sync
+            loadProjectDetails(selectedId)
+        } else {
+            setMessage('Error al actualizar datos.')
+        }
+        setLoading(false)
+    }
+
+    return (
+        <div className="min-h-screen flex flex-col">
+            <Navbar />
+            <main className="container py-8 flex-grow">
+                <h1 className="text-2xl font-bold mb-6">Módulo de Edición</h1>
+
+                <div className="card max-w-2xl mx-auto">
+                    <div className="mb-6">
+                        <label className="label">Seleccionar Proyecto para Editar</label>
+                        <select
+                            className="input bg-gray-50 mb-4"
+                            value={selectedId}
+                            onChange={(e) => { setSelectedId(e.target.value); setMessage(''); }}
+                        >
+                            <option value="">-- Seleccione un Proyecto --</option>
+                            {projects.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                        </select>
+                    </div>
+
+                    {selectedId && formData && (
+                        <form onSubmit={handleSubmit} className="space-y-6 border-t pt-6 border-gray-100">
+
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="label">Monto Fondoempleo (S/)</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        className="input"
+                                        value={formData.monto_fondoempleo}
+                                        onChange={(e) => setFormData({ ...formData, monto_fondoempleo: e.target.value })}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="label">Monto Contrapartida (S/)</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        className="input"
+                                        value={formData.avance}
+                                        onChange={(e) => setFormData({ ...formData, avance: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="pt-2">
+                                <button type="submit" className="btn btn-primary w-full" disabled={loading}>
+                                    {loading ? 'Guardando...' : 'Guardar Cambios'}
+                                </button>
+                            </div>
+                            {message && (
+                                <div className={`p-3 rounded text-sm text-center font-medium ${message.includes('Error') ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
+                                    {message}
+                                </div>
+                            )}
+                        </form>
+                    )}
+                </div>
+            </main>
+            <Footer />
+        </div>
+    )
+}
