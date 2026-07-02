@@ -1,6 +1,18 @@
 
 
 services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: fondo2
+      POSTGRES_PASSWORD: fondo2
+      POSTGRES_DB: fondo2
+    ports:
+      - "5434:5432"
+    volumes:
+      - fondo2_pgdata:/var/lib/postgresql/data
+    restart: always
+
   app:
     build:
       context: .
@@ -10,7 +22,7 @@ services:
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
     ports:
-      - "8081:3000"
+      - "8082:3000"
     volumes:
       - ./:/app
       - /app/node_modules
@@ -21,4 +33,10 @@ services:
     environment:
       - NODE_ENV=development
       - WATCHPACK_POLLING=true
+      - DATABASE_URL=postgresql://fondo2:fondo2@db:5432/fondo2
+    depends_on:
+      - db
     restart: always
+
+volumes:
+  fondo2_pgdata:
