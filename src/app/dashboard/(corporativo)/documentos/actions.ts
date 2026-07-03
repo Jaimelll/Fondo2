@@ -1,31 +1,25 @@
 "use server";
 
-import { createClient } from "@supabase/supabase-js";
+import { promises as fs } from "fs";
+import path from "path";
 import { revalidatePath } from "next/cache";
 import { query } from "@/lib/db";
 
-// NOTA (Fase 2): la capa de DATOS ya va contra Postgres (query de lib/db).
-// supabase.storage sigue en uso solo para los PDFs — se reemplaza por storage
-// local en la Fase 3.
-function getSupabase() {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    
-    if (!url || !key) {
-        throw new Error("Supabase environment variables are missing.");
-    }
-    
-    return createClient(url, key, {
-        auth: {
-            persistSession: false
-        }
-    });
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Storage local de PDFs (reemplaza a Supabase Storage). Los archivos viven en
+// STORAGE_DOCUMENTS_PATH (por defecto ./storage/documentos) y se sirven vía
+// GET /api/documentos/[archivo] (ruta protegida por el proxy de auth).
+// Los registros antiguos con url_pdf apuntando al Storage de Supabase siguen
+// abriendo esa URL remota; solo los archivos nuevos se guardan en disco.
+// ─────────────────────────────────────────────────────────────────────────────
 
-const BUCKET_NAME = "documentos_gerenciales";
+const STORAGE_DIR = path.resolve(
+    process.cwd(),
+    process.env.STORAGE_DOCUMENTS_PATH || "./storage/documentos",
+);
 
 /**
- * Sanitizes a filename for Supabase Storage:
+ * Sanitizes a filename:
  * - Removes accents/tildes
  * - Replaces 'ñ' with 'n'
  * - Replaces spaces with '_'
@@ -38,6 +32,32 @@ function sanitizeFileName(fileName: string): string {
         .replace(/[\u0300-\u036f]/g, "") // quita tildes
         .replace(/[^a-zA-Z0-9._-]/g, "_") // reemplaza espacios y especiales por _
         .toLowerCase();
+}
+
+/** Guarda el PDF en disco y devuelve el nombre final del archivo. */
+async function guardarArchivo(file: File): Promise<string> {
+    const fileName = `${Date.now()}_${sanitizeFileName(file.name)}`;
+    await fs.mkdir(STORAGE_DIR, { recursive: true });
+    const buffer = Buffer.from(await file.arrayBuffer());
+    await fs.writeFile(path.join(STORAGE_DIR, fileName), buffer);
+    return fileName;
+}
+
+/** Borra del disco el archivo referido por un url_pdf (si es local y existe). */
+async function eliminarArchivo(urlPdf: string | null | undefined) {
+    if (!urlPdf) return;
+    const fileName = path.basename(decodeURIComponent(urlPdf.split("/").pop() || ""));
+    if (!fileName) return;
+    try {
+        await fs.unlink(path.join(STORAGE_DIR, fileName));
+    } catch (err: any) {
+        // Registros antiguos apuntan al Storage de Supabase: no hay archivo local.
+        console.warn("Storage deletion warning:", err.message);
+    }
+}
+
+function urlPublica(fileName: string): string {
+    return `/api/documentos/${encodeURIComponent(fileName)}`;
 }
 
 export async function getDocumentos(search?: string) {
@@ -65,7 +85,6 @@ export async function getDocumentos(search?: string) {
 
 export async function createDocumento(formData: FormData) {
     try {
-        const supabase = getSupabase();
         const fecha_documento = formData.get("fecha_documento") as string;
         const nombre_archivo = formData.get("nombre_archivo") as string;
         const observaciones = formData.get("observaciones") as string;
@@ -80,39 +99,23 @@ export async function createDocumento(formData: FormData) {
             return { success: false, error: "El archivo excede el límite de 20 MB." };
         }
 
-        const sanitizedFileName = sanitizeFileName(file.name);
-        const fileName = `${Date.now()}_${sanitizedFileName}`;
-        
-        console.log("FILE NAME:", file.name);
-        console.log("FILE PATH FINAL:", fileName);
-
-        const { data: uploadData, error: uploadError } = await supabase.storage
-            .from(BUCKET_NAME)
-            .upload(fileName, file, { 
-                contentType: "application/pdf", 
-                upsert: true,
-                cacheControl: '3600'
-            });
-
-        if (uploadError) {
+        let fileName: string;
+        try {
+            fileName = await guardarArchivo(file);
+        } catch (uploadError: any) {
             console.error("Storage upload error:", uploadError);
-            const msg = uploadError.message.includes("fetch") ? "Error de conexión con el Storage" : uploadError.message;
-            return { success: false, error: `Error Storage: ${msg}` };
+            return { success: false, error: `Error Storage: ${uploadError.message}` };
         }
-
-        const { data: urlData } = supabase.storage
-            .from(BUCKET_NAME)
-            .getPublicUrl(uploadData.path);
 
         try {
             await query(
                 `insert into documentos_gerenciales (fecha_documento, nombre_archivo, url_pdf, observaciones)
                  values ($1, $2, $3, $4)`,
-                [fecha_documento /* YYYY-MM-DD */, nombre_archivo, urlData.publicUrl, observaciones],
+                [fecha_documento /* YYYY-MM-DD */, nombre_archivo, urlPublica(fileName), observaciones],
             );
         } catch (dbError: any) {
             console.error("Database insert error:", dbError.message);
-            await supabase.storage.from(BUCKET_NAME).remove([uploadData.path]);
+            await eliminarArchivo(urlPublica(fileName));
             return { success: false, error: `Error DB: ${dbError.message}` };
         }
 
@@ -126,7 +129,6 @@ export async function createDocumento(formData: FormData) {
 
 export async function updateDocumento(id: string, formData: FormData) {
     try {
-        const supabase = getSupabase();
         const fecha_documento = formData.get("fecha_documento") as string;
         const nombre_archivo = formData.get("nombre_archivo") as string;
         const observaciones = formData.get("observaciones") as string;
@@ -155,39 +157,18 @@ export async function updateDocumento(id: string, formData: FormData) {
                 return { success: false, error: "El nuevo archivo excede los 20 MB." };
             }
 
-            const sanitizedFileName = sanitizeFileName(file.name);
-            const fileName = `${Date.now()}_${sanitizedFileName}`;
-            
-            console.log("FILE NAME:", file.name);
-            console.log("FILE PATH FINAL:", fileName);
-
-            const { data: uploadData, error: uploadError } = await supabase.storage
-                .from(BUCKET_NAME)
-                .upload(fileName, file, { 
-                    contentType: "application/pdf", 
-                    upsert: true,
-                    cacheControl: '3600'
-                });
-
-            if (uploadError) {
+            let fileName: string;
+            try {
+                fileName = await guardarArchivo(file);
+            } catch (uploadError: any) {
                 console.error("Storage update error:", uploadError);
                 return { success: false, error: `Error Storage (update): ${uploadError.message}` };
             }
 
-            const { data: urlData } = supabase.storage
-                .from(BUCKET_NAME)
-                .getPublicUrl(uploadData.path);
-            
-            updateData.url_pdf = urlData.publicUrl;
+            updateData.url_pdf = urlPublica(fileName);
 
             // Cleanup old file
-            if (current.url_pdf) {
-                const parts = current.url_pdf.split("/");
-                const oldPath = parts[parts.length - 1];
-                if (oldPath) {
-                    await supabase.storage.from(BUCKET_NAME).remove([oldPath]);
-                }
-            }
+            await eliminarArchivo(current.url_pdf);
         }
 
         try {
@@ -213,8 +194,6 @@ export async function updateDocumento(id: string, formData: FormData) {
 
 export async function deleteDocumento(id: string) {
     try {
-        const supabase = getSupabase();
-
         let current: any;
         try {
             const { rows } = await query('select url_pdf from documentos_gerenciales where id = $1', [id]);
@@ -224,16 +203,7 @@ export async function deleteDocumento(id: string) {
             return { success: false, error: "Error al verificar existencia para eliminación." };
         }
 
-        if (current?.url_pdf) {
-            const parts = current.url_pdf.split("/");
-            const filePath = parts[parts.length - 1];
-            if (filePath) {
-                const { error: storageDelError } = await supabase.storage.from(BUCKET_NAME).remove([filePath]);
-                if (storageDelError) {
-                    console.warn("Storage deletion warning:", storageDelError.message);
-                }
-            }
-        }
+        await eliminarArchivo(current.url_pdf);
 
         try {
             await query('delete from documentos_gerenciales where id = $1', [id]);
