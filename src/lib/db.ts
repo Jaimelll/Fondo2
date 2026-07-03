@@ -1,4 +1,10 @@
-import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
+import { Pool, types, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
+
+// supabase-js (PostgREST) devolvía numeric/bigint como números JSON; pg los
+// devuelve como string. Parseamos igual que antes para no romper las vistas.
+// (No tocamos fechas/timestamps: Better-Auth necesita Date en "session".)
+types.setTypeParser(types.builtins.NUMERIC, parseFloat);
+types.setTypeParser(types.builtins.INT8, (v) => parseInt(v, 10));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pool único de Postgres para todo el servidor (auth, permisos y, en fases

@@ -1,35 +1,27 @@
 "use server";
 
-import { createClient } from '@/utils/supabase/server';
-import { revalidatePath } from 'next/cache';
+import { query } from '@/lib/db';
 
 export async function getAportantesData() {
-    const supabase = await createClient();
-    const { data, error } = await supabase
-        .from('aportes')
-        .select(`
-            id,
-            empresa_ruc,
-            anio,
-            monto,
-            empresas!inner (
-                ruc,
-                razon_social,
-                ciiu_id,
-                sectores_ciiu!inner (
-                    id,
-                    seccion_desc
-                )
-            )
-        `);
-
-    if (error) {
-        console.error('Error fetching aportes:', error);
+    let rows: any[];
+    try {
+        // Equivale a empresas!inner + sectores_ciiu!inner: solo aportes cuya
+        // empresa y sector existen (INNER JOIN).
+        const result = await query(
+            `select a.id, a.empresa_ruc, a.anio, a.monto,
+                    e.razon_social, s.seccion_desc
+               from aportes a
+               join empresas e on e.ruc = a.empresa_ruc
+               join sectores_ciiu s on s.id = e.ciiu_id`,
+        );
+        rows = result.rows;
+    } catch (err) {
+        console.error('Error fetching aportes:', err);
         return { data: [], annualTotals: {} };
     }
 
     const annualTotals: Record<number, number> = {};
-    const mappedData = data.map((row: any) => {
+    const mappedData = rows.map((row: any) => {
         const monto = Number(row.monto) || 0;
         const anio = Number(row.anio);
         annualTotals[anio] = (annualTotals[anio] || 0) + monto;
@@ -39,55 +31,47 @@ export async function getAportantesData() {
             ruc: row.empresa_ruc,
             anio,
             monto,
-            razon_social: row.empresas?.razon_social || 'Desconocido',
-            seccion_desc: row.empresas?.sectores_ciiu?.seccion_desc || 'Desconocido'
+            razon_social: row.razon_social || 'Desconocido',
+            seccion_desc: row.seccion_desc || 'Desconocido'
         };
     });
 
-    return { 
-        data: mappedData, 
-        annualTotals 
+    return {
+        data: mappedData,
+        annualTotals
     };
 }
 
 export async function getSectoresDistintos() {
-    const supabase = await createClient();
-    const { data, error } = await supabase
-        .from('sectores_ciiu')
-        .select('seccion_desc');
-
-    if (error) return [];
-    const unique = Array.from(new Set(data.map((s: any) => s.seccion_desc).filter(Boolean)));
-    return (unique as string[]).sort();
+    try {
+        const { rows } = await query('select distinct seccion_desc from sectores_ciiu where seccion_desc is not null order by seccion_desc');
+        return rows.map((s: any) => s.seccion_desc) as string[];
+    } catch {
+        return [];
+    }
 }
 
 export async function getUnidadesOperativas() {
-    const supabase = await createClient();
-    const { data, error } = await supabase
-        .from('unidades_operativas')
-        .select('id, siglas, nombre_completo, orden')
-        .order('orden', { ascending: true });
-
-    if (error) {
-        console.error('Error fetching unidades operativas:', error);
+    try {
+        const { rows } = await query('select id, siglas, nombre_completo, orden from unidades_operativas order by orden asc');
+        return rows as any[];
+    } catch (err) {
+        console.error('Error fetching unidades operativas:', err);
         return [];
     }
-    return data;
 }
 
 export async function getPresupuestoMensual() {
-    const supabase = await createClient();
-    const { data, error } = await supabase
-        .from('presupuesto_mensual')
-        .select(`
-            mes,
-            presupuesto,
-            ejecutado,
-            unidades_operativas:unidad_operativa_id (siglas)
-        `);
-
-    if (error) {
-        console.error('Error fetching presupuesto mensual consolidado:', error);
+    let rows: any[];
+    try {
+        const result = await query(
+            `select p.mes, p.presupuesto, p.ejecutado, u.siglas
+               from presupuesto_mensual p
+               left join unidades_operativas u on u.id = p.unidad_operativa_id`,
+        );
+        rows = result.rows;
+    } catch (err) {
+        console.error('Error fetching presupuesto mensual consolidado:', err);
         return [];
     }
 
@@ -100,14 +84,14 @@ export async function getPresupuestoMensual() {
         ejecutadoBreakdown: {}
     } as any));
 
-    data.forEach((row: any) => {
+    rows.forEach((row: any) => {
         const idx = (row.mes || 1) - 1;
         if (idx < 0 || idx > 11) return;
 
-        const siglas = (row.unidades_operativas as any)?.siglas || 'OTR';
+        const siglas = row.siglas || 'OTR';
         const presuMonto = Number(row.presupuesto) || 0;
         const ejecMonto = Number(row.ejecutado) || 0;
-        
+
         result[idx].presupuesto += presuMonto;
         result[idx].ejecutado += ejecMonto;
 
@@ -122,32 +106,30 @@ export async function getPresupuestoMensual() {
 
 
 export async function getPresupuestoComparativo() {
-    const supabase = await createClient();
-    const { data, error } = await supabase
-        .from('presupuesto_anual_comparativo')
-        .select(`
-            año, 
-            poi, 
-            ejecutado,
-            unidades_operativas:unidad_operativa_id (siglas)
-        `);
-
-    if (error) {
-        console.error('Error fetching presupuesto comparativo consolidado:', error);
+    let rows: any[];
+    try {
+        const result = await query(
+            `select p."año", p.poi, p.ejecutado, u.siglas
+               from presupuesto_anual_comparativo p
+               left join unidades_operativas u on u.id = p.unidad_operativa_id`,
+        );
+        rows = result.rows;
+    } catch (err) {
+        console.error('Error fetching presupuesto comparativo consolidado:', err);
         return [];
     }
 
-    const consolidated = data.reduce((acc: any, curr: any) => {
+    const consolidated = rows.reduce((acc: any, curr: any) => {
         const year = curr.año;
-        if (!acc[year]) acc[year] = { 
-            año: year, 
-            poi: 0, 
+        if (!acc[year]) acc[year] = {
+            año: year,
+            poi: 0,
             ejecutado: 0,
             poiBreakdown: {},
             ejecutadoBreakdown: {}
         };
-        
-        const siglas = (curr.unidades_operativas as any)?.siglas || 'OTR';
+
+        const siglas = curr.siglas || 'OTR';
         const poiMonto = Number(curr.poi) || 0;
         const ejecMonto = Number(curr.ejecutado) || 0;
 

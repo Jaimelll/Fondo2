@@ -2,7 +2,11 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
+import { query } from "@/lib/db";
 
+// NOTA (Fase 2): la capa de DATOS ya va contra Postgres (query de lib/db).
+// supabase.storage sigue en uso solo para los PDFs — se reemplaza por storage
+// local en la Fase 3.
 function getSupabase() {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -38,24 +42,21 @@ function sanitizeFileName(fileName: string): string {
 
 export async function getDocumentos(search?: string) {
     try {
-        const supabase = getSupabase();
-        let query = supabase
-            .from("documentos_gerenciales")
-            .select("*")
-            .order("fecha_documento", { ascending: false });
+        // fecha_documento::text conserva el formato 'YYYY-MM-DD' que devolvía
+        // PostgREST (la clave duplicada del select sobreescribe a la de d.*).
+        let sql = `select d.*, d.fecha_documento::text as fecha_documento
+                     from documentos_gerenciales d`;
+        const params: unknown[] = [];
 
         if (search && search.trim()) {
-            const term = `%${search.trim()}%`;
-            query = query.or(`nombre_archivo.ilike.${term},observaciones.ilike.${term}`);
+            params.push(`%${search.trim()}%`);
+            sql += ` where d.nombre_archivo ilike $1 or d.observaciones ilike $1`;
         }
 
-        const { data, error } = await query;
+        sql += ` order by d.fecha_documento desc`;
 
-        if (error) {
-            console.error("Error fetching documentos:", error.message);
-            return [];
-        }
-        return data || [];
+        const { rows } = await query(sql, params);
+        return rows;
     } catch (err: any) {
         console.error("Critical error in getDocumentos:", err.message);
         return [];
@@ -103,14 +104,13 @@ export async function createDocumento(formData: FormData) {
             .from(BUCKET_NAME)
             .getPublicUrl(uploadData.path);
 
-        const { error: dbError } = await supabase.from("documentos_gerenciales").insert({
-            fecha_documento, // Input is YYYY-MM-DD string
-            nombre_archivo,
-            url_pdf: urlData.publicUrl,
-            observaciones,
-        });
-
-        if (dbError) {
+        try {
+            await query(
+                `insert into documentos_gerenciales (fecha_documento, nombre_archivo, url_pdf, observaciones)
+                 values ($1, $2, $3, $4)`,
+                [fecha_documento /* YYYY-MM-DD */, nombre_archivo, urlData.publicUrl, observaciones],
+            );
+        } catch (dbError: any) {
             console.error("Database insert error:", dbError.message);
             await supabase.storage.from(BUCKET_NAME).remove([uploadData.path]);
             return { success: false, error: `Error DB: ${dbError.message}` };
@@ -132,13 +132,13 @@ export async function updateDocumento(id: string, formData: FormData) {
         const observaciones = formData.get("observaciones") as string;
         const file = formData.get("archivo") as File | null;
 
-        const { data: current, error: fetchError } = await supabase
-            .from("documentos_gerenciales")
-            .select("*")
-            .eq("id", id)
-            .single();
+        const { rows: currentRows } = await query(
+            'select * from documentos_gerenciales where id = $1',
+            [id],
+        );
+        const current = currentRows[0];
 
-        if (fetchError || !current) {
+        if (!current) {
             return { success: false, error: "No se encontró el documento en la base de datos." };
         }
 
@@ -190,12 +190,15 @@ export async function updateDocumento(id: string, formData: FormData) {
             }
         }
 
-        const { error: dbUpdateError } = await supabase
-            .from("documentos_gerenciales")
-            .update(updateData)
-            .eq("id", id);
-
-        if (dbUpdateError) {
+        try {
+            const cols = Object.keys(updateData);
+            const values = cols.map((c) => updateData[c]);
+            const assignments = cols.map((c, i) => `"${c}" = $${i + 1}`);
+            await query(
+                `update documentos_gerenciales set ${assignments.join(', ')} where id = $${cols.length + 1}`,
+                [...values, id],
+            );
+        } catch (dbUpdateError: any) {
             console.error("Database update error:", dbUpdateError.message);
             return { success: false, error: `Error DB (update): ${dbUpdateError.message}` };
         }
@@ -212,13 +215,12 @@ export async function deleteDocumento(id: string) {
     try {
         const supabase = getSupabase();
 
-        const { data: current, error: fetchError } = await supabase
-            .from("documentos_gerenciales")
-            .select("url_pdf")
-            .eq("id", id)
-            .single();
-
-        if (fetchError) {
+        let current: any;
+        try {
+            const { rows } = await query('select url_pdf from documentos_gerenciales where id = $1', [id]);
+            current = rows[0];
+            if (!current) throw new Error('not found');
+        } catch {
             return { success: false, error: "Error al verificar existencia para eliminación." };
         }
 
@@ -233,9 +235,9 @@ export async function deleteDocumento(id: string) {
             }
         }
 
-        const { error: dbDelError } = await supabase.from("documentos_gerenciales").delete().eq("id", id);
-
-        if (dbDelError) {
+        try {
+            await query('delete from documentos_gerenciales where id = $1', [id]);
+        } catch (dbDelError: any) {
             return { success: false, error: `Error DB (delete): ${dbDelError.message}` };
         }
 

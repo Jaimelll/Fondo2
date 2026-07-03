@@ -1,7 +1,8 @@
 "use server";
 
-import { createClient } from "@supabase/supabase-js";
 import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
+import { query, withAuditUser } from "@/lib/db";
+import { getSession } from "@/lib/session";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers de caché para catálogos (líneas, ejes, etc.) — datos que rara vez
@@ -13,128 +14,159 @@ import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
 const CATALOG_REVALIDATE_SECONDS = 3600; // 1 hora
 const CATALOG_TAG = "catalogos";
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Capa de datos: Postgres directo (src/lib/db.ts). El SELECT base replica los
+// "embedded selects" que antes resolvía PostgREST: lookups por LEFT JOIN y el
+// historial de avances como json_agg lateral (mismas formas anidadas).
+// ──────────────────────────────────────────────────────────────────────────────
+
+const PROYECTO_BASE_SELECT = `
+  select
+    p.*,
+    l.descripcion  as linea_descripcion,
+    ej.descripcion as eje_descripcion,
+    r.descripcion  as region_descripcion,
+    ie.nombre      as institucion_nombre,
+    mo.descripcion as modalidad_descripcion,
+    et.descripcion as etapa_descripcion,
+    et.fase        as etapa_fase,
+    esp.nombre     as especialista_nombre,
+    g.descripcion  as grupo_descripcion,
+    g.orden        as grupo_orden,
+    coalesce(av.avances, '[]'::json) as avances
+  from proyectos p
+  left join lineas l   on l.id  = p.linea_id
+  left join ejes ej    on ej.id = p.eje_id
+  left join regiones r on r.id  = p.region_id
+  left join instituciones_ejecutoras ie on ie.id = p.institucion_ejecutora_id
+  left join modalidades mo on mo.id = p.modalidad_id
+  left join etapas et  on et.id = p.etapa_id
+  left join especialistas esp on esp.id = p.especialista_id
+  left join grupo g    on g.id  = p.grupo_id
+  left join lateral (
+    select json_agg(json_build_object(
+      'id', a.id,
+      'fecha', a.fecha::text,
+      'etapa_id', a.etapa_id,
+      'sustento', a.sustento,
+      'monto', a.monto,
+      'etapa', json_build_object('descripcion', ae.descripcion)
+    ) order by a.id) as avances
+    from avance_proyecto a
+    left join etapas ae on ae.id = a.etapa_id
+    where a.proyecto_id = p.id
+  ) av on true
+`;
+
+/** Filtro genérico: ignora 'all', 'todos', '', 'undefined', '0'. */
+function esFiltroActivo(value?: string | number | null): boolean {
+  if (value === undefined || value === null) return false;
+  const valString = String(value).trim();
+  const valLower = valString.toLowerCase();
+  if (valLower === 'all' || valLower === 'undefined' || valLower === '' || valLower.startsWith('tod') || valString === '0') {
+    return false;
+  }
+  return true;
+}
+
+function mapProyectoRow(p: any) {
+  let year = p.año ? String(p.año) : 'Unknown';
+  if (year === 'Unknown' && p.fecha_inicio) {
+    year = new Date(p.fecha_inicio).getFullYear().toString();
+  } else if (year === 'Unknown' && p.created_at) {
+    year = new Date(p.created_at).getFullYear().toString();
+  }
+
+  const avances = p.avances || [];
+
+  return {
+    id: p.id,
+    nombre: p.nombre || 'Sin Nombre',
+    codigo: p.codigo_proyecto,
+    codigo_proyecto: p.codigo_proyecto,
+    region: p.region_descripcion || p.region || 'Desconocido',
+    linea: p.linea_descripcion || 'Sin Linea',
+    lineaId: p.linea_id,
+    eje: p.eje_descripcion || 'Sin Eje',
+    ejeId: p.eje_id,
+    etapa: p.etapa_descripcion || 'Sin Etapa',
+    etapaId: p.etapa_id,
+    institucion: p.institucion_nombre || 'Sin Institucion',
+    institucionId: p.institucion_ejecutora_id,
+    gestora: p.gestora || '',
+    regionId: p.region_id,
+    modalidad: p.modalidad_descripcion || 'Desconocido',
+    modalidadId: p.modalidad_id,
+    estado: p.etapa_descripcion || 'Activo',
+    sustento: p.sustento || '',
+    year: year,
+    año: Number(p.año) || 0,
+    fase: p.etapa_fase || '',
+    monto_fondoempleo: Number(p.monto_fondoempleo) || 0,
+    avance: Number(p.avance) || 0,
+    contrapartida: Number(p.contrapartida) || 0,
+    monto_total: (Number(p.monto_fondoempleo) || 0) + (Number(p.contrapartida) || 0),
+    beneficiarios: Number(p.beneficiarios) || 0,
+    avance_tecnico: Number(p.avance_tecnico) || 0,
+    fecha_inicio: avances.find((a: any) => a.etapa_id === 1)?.fecha || null,
+    fecha_fin: avances.find((a: any) => a.etapa_id === 6)?.fecha || null,
+    avances: avances,
+    grupo_id: p.grupo_id,
+    nombre_grupo: p.grupo_descripcion || '',
+    provincia: p.provincia || '',
+    especialista_id: p.especialista_id,
+    especialista: p.especialista_nombre || '',
+    contacto: p.contacto || ''
+  };
+}
+
+type ProyectoFilters = {
+  periodo?: string; eje?: string; linea?: string; etapa?: string;
+  modalidad?: string; especialistaId?: string; grupo_id?: string; id_exacto?: string;
+};
+
+function buildProyectoConditions(filters?: ProyectoFilters) {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  const add = (sqlFragment: string, value: unknown) => {
+    params.push(value);
+    conditions.push(sqlFragment.replace('?', `$${params.length}`));
+  };
+
+  if (filters?.periodo && filters.periodo !== 'all' && filters.periodo !== 'undefined') {
+    const yearVal = Number(filters.periodo);
+    if (!isNaN(yearVal)) add('p."año" = ?::int', yearVal);
+  }
+  if (esFiltroActivo(filters?.eje)) add('p.eje_id = ?::int', Number(filters!.eje));
+  if (esFiltroActivo(filters?.linea)) add('p.linea_id = ?::int', Number(filters!.linea));
+  if (esFiltroActivo(filters?.modalidad)) add('p.modalidad_id = ?::int', Number(filters!.modalidad));
+  if (esFiltroActivo(filters?.especialistaId)) add('p.especialista_id = ?::int', Number(filters!.especialistaId));
+  if (esFiltroActivo(filters?.etapa)) add('p.etapa_id = ?::int', Number(filters!.etapa));
+  if (filters?.grupo_id && filters.grupo_id !== 'all' && filters.grupo_id !== '' && filters.grupo_id !== 'undefined') {
+    add('p.grupo_id = ?::int', Number(filters.grupo_id));
+  }
+  if (filters?.id_exacto && filters.id_exacto !== '' && filters.id_exacto !== 'undefined') {
+    add('p.id = ?::int', Number(filters.id_exacto));
+  }
+
+  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
+  return { where, params };
+}
 
 export async function getDashboardData(filters?: { periodo?: string; eje?: string; linea?: string; etapa?: string; modalidad?: string; especialistaId?: string }) {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+    const { where, params } = buildProyectoConditions(filters);
+    const { rows } = await query(`${PROYECTO_BASE_SELECT} ${where} order by p.id asc`, params);
 
-    if (!supabaseServiceKey) {
-      console.error("CRITICAL: SUPABASE_SERVICE_ROLE_KEY is missing");
-      return [];
-    }
-
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-    
-    let query = supabase
-      .from('proyectos')
-      .select(`
-        *,
-        lineas (descripcion),
-        ejes (descripcion),
-        regiones (descripcion),
-        instituciones_ejecutoras (nombre),
-        modalidades (descripcion),
-        etapas (descripcion, fase),
-        especialista:especialistas(nombre),
-        avance_tecnico,
-        avance_proyecto (
-          id,
-          fecha,
-          etapa_id,
-          sustento,
-          monto
-        ),
-        grupo:grupo_id(descripcion)
-      `);
-
-    if (filters?.periodo && filters.periodo !== 'all' && filters.periodo !== 'undefined') {
-      const yearVal = Number(filters.periodo);
-      if (!isNaN(yearVal)) query = query.eq('año', yearVal);
-    }
-
-    const applyFilter = (column: string, value?: string | number) => {
-      if (value === undefined || value === null) return;
-      const valString = String(value).trim();
-      const valLower = valString.toLowerCase();
-      
-      if (valLower === 'all' || valLower === 'undefined' || valLower === '' || valLower.startsWith('tod') || valString === '0') {
-        return; // Ignora los filtros vacíos o globales
-      }
-      
-      query = query.eq(column, value);
-    };
-
-    applyFilter('eje_id', filters?.eje);
-    applyFilter('linea_id', filters?.linea);
-    applyFilter('modalidad_id', filters?.modalidad);
-    applyFilter('especialista_id', filters?.especialistaId);
-    applyFilter('etapa_id', filters?.etapa); 
-
-    query = query.order('id', { ascending: true });
-
-    const { data, error } = await query;
-
-    if (error) {
-      return [];
-    }
-
-    if (!data || data.length === 0) return [];
+    if (!rows || rows.length === 0) return [];
 
     // Filtro seguro en el servidor para evitar el colapso del inner join
-    const proyectosValidos = data.filter((p: any) => {
-      const desc = p.etapas?.descripcion?.toLowerCase() || '';
+    const proyectosValidos = rows.filter((p: any) => {
+      const desc = p.etapa_descripcion?.toLowerCase() || '';
       return !desc.includes('no habilitada');
     });
 
-    return proyectosValidos.map((p: any) => {
-      let year = p.año ? String(p.año) : 'Unknown';
-      if (year === 'Unknown' && p.fecha_inicio) {
-        year = new Date(p.fecha_inicio).getFullYear().toString();
-      } else if (year === 'Unknown' && p.created_at) {
-        year = new Date(p.created_at).getFullYear().toString();
-      }
-
-      return {
-        id: p.id,
-        nombre: p.nombre || 'Sin Nombre',
-        codigo: p.codigo_proyecto,
-        codigo_proyecto: p.codigo_proyecto,
-        region: p.regiones?.descripcion || p.region || 'Desconocido',
-        linea: p.lineas?.descripcion || 'Sin Linea',
-        lineaId: p.linea_id,
-        eje: p.ejes?.descripcion || 'Sin Eje',
-        ejeId: p.eje_id,
-        etapa: p.etapas?.descripcion || 'Sin Etapa',
-        etapaId: p.etapa_id,
-        institucion: p.instituciones_ejecutoras?.nombre || 'Sin Institucion',
-        institucionId: p.institucion_ejecutora_id,
-        gestora: p.gestora || '',
-        regionId: p.region_id,
-        modalidad: p.modalidades?.descripcion || 'Desconocido',
-        modalidadId: p.modalidad_id,
-        estado: p.etapas?.descripcion || 'Activo',
-        sustento: p.sustento || '',
-        year: year,
-        año: Number(p.año) || 0,
-        fase: p.etapas?.fase || '',
-        monto_fondoempleo: Number(p.monto_fondoempleo) || 0,
-        avance: Number(p.avance) || 0,
-        contrapartida: Number(p.contrapartida) || 0,
-        monto_total: (Number(p.monto_fondoempleo) || 0) + (Number(p.contrapartida) || 0),
-        beneficiarios: Number(p.beneficiarios) || 0,
-        avance_tecnico: Number(p.avance_tecnico) || 0,
-        fecha_inicio: p.avance_proyecto?.find((a: any) => a.etapa_id === 1)?.fecha || null,
-        fecha_fin: p.avance_proyecto?.find((a: any) => a.etapa_id === 6)?.fecha || null,
-        avances: p.avance_proyecto || [],
-        grupo_id: p.grupo_id,
-        nombre_grupo: p.grupo?.descripcion || '',
-        provincia: p.provincia || '',
-        especialista_id: p.especialista_id,
-        especialista: p.especialista?.nombre || '',
-        contacto: p.contacto || ''
-      };
-    });
+    return proyectosValidos.map(mapProyectoRow);
   } catch (err) {
     console.error("FATAL ERROR getDashboardData:", err);
     return [];
@@ -143,148 +175,19 @@ export async function getDashboardData(filters?: { periodo?: string; eje?: strin
 
 export async function getGestionProyectosData(filters?: { periodo?: string; eje?: string; linea?: string; etapa?: string; modalidad?: string; especialistaId?: string; grupo_id?: string; id_exacto?: string }) {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+    const { where, params } = buildProyectoConditions(filters);
+    const { rows } = await query(`${PROYECTO_BASE_SELECT} ${where} order by p.id asc`, params);
 
-    if (!supabaseServiceKey) {
-      console.error("CRITICAL: SUPABASE_SERVICE_ROLE_KEY is missing");
-      return [];
-    }
+    if (!rows || rows.length === 0) return [];
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-    
-    let query = supabase
-      .from('proyectos')
-      .select(`
-        id,
-        nombre,
-        codigo_proyecto,
-        año,
-        created_at,
-        eje_id,
-        linea_id,
-        region_id,
-        etapa_id,
-        modalidad_id,
-        institucion_ejecutora_id,
-        especialista_id,
-        grupo_id,
-        gestora,
-        sustento,
-        monto_fondoempleo,
-        avance,
-        contrapartida,
-        beneficiarios,
-        avance_tecnico,
-        provincia,
-        contacto,
-        lineas (descripcion),
-        ejes (descripcion),
-        regiones (descripcion),
-        instituciones_ejecutoras (nombre),
-        modalidades (descripcion),
-        etapas (descripcion, fase),
-        especialista:especialistas(nombre),
-        avance_proyecto (
-          id,
-          fecha,
-          etapa_id,
-          sustento,
-          monto
-        ),
-        grupo:grupo_id(descripcion)
-      `);
-
-    if (filters?.periodo && filters.periodo !== 'all' && filters.periodo !== 'undefined') {
-      const yearVal = Number(filters.periodo);
-      if (!isNaN(yearVal)) query = query.eq('año', yearVal);
-    }
-
-    const applyFilter = (column: string, value?: string) => {
-      if (value && value !== 'all' && value !== 'todos' && value !== 'undefined') {
-        query = query.eq(column, value);
+    // Replica el .not('etapas.descripcion','ilike','no habilitada') de PostgREST
+    // sobre un embed to-one: el proyecto se mantiene, pero su etapa queda nula
+    // (la vista lo muestra como 'Sin Etapa').
+    return rows.map((p: any) => {
+      if ((p.etapa_descripcion || '').toLowerCase() === 'no habilitada') {
+        return mapProyectoRow({ ...p, etapa_descripcion: null, etapa_fase: null });
       }
-    };
-
-    applyFilter('eje_id', filters?.eje);
-    applyFilter('linea_id', filters?.linea);
-    applyFilter('modalidad_id', filters?.modalidad);
-    applyFilter('especialista_id', filters?.especialistaId);
-
-    if (filters?.grupo_id && filters.grupo_id !== 'all' && filters.grupo_id !== '' && filters.grupo_id !== 'undefined') {
-      query = query.eq('grupo_id', filters.grupo_id);
-    }
-
-    if (filters?.id_exacto && filters.id_exacto !== '' && filters.id_exacto !== 'undefined') {
-      query = query.eq('id', filters.id_exacto);
-    }
-
-    if (filters?.etapa && filters.etapa !== 'all' && filters.etapa !== 'todos' && filters.etapa !== 'undefined') {
-      query = query.eq('etapa_id', filters.etapa);
-    }
-
-    if (filters?.especialistaId && Number(filters.especialistaId) !== 0 && filters.especialistaId !== 'undefined') {
-      query = query.eq('especialista_id', filters.especialistaId);
-    }
-
-    query = query.not('etapas.descripcion', 'ilike', 'no habilitada').order('id', { ascending: true });
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error("Error fetching gestion proyectos data:", error.message || error.details || error);
-      return [];
-    }
-
-    if (!data || data.length === 0) return [];
-
-    return data.map((p: any) => {
-      let year = p.año ? String(p.año) : 'Unknown';
-      if (year === 'Unknown' && p.fecha_inicio) {
-        year = new Date(p.fecha_inicio).getFullYear().toString();
-      } else if (year === 'Unknown' && p.created_at) {
-        year = new Date(p.created_at).getFullYear().toString();
-      }
-
-      return {
-        id: p.id,
-        nombre: p.nombre || 'Sin Nombre',
-        codigo: p.codigo_proyecto,
-        codigo_proyecto: p.codigo_proyecto,
-        region: p.regiones?.descripcion || p.region || 'Desconocido',
-        linea: p.lineas?.descripcion || 'Sin Linea',
-        lineaId: p.linea_id,
-        eje: p.ejes?.descripcion || 'Sin Eje',
-        ejeId: p.eje_id,
-        etapa: p.etapas?.descripcion || 'Sin Etapa',
-        etapaId: p.etapa_id,
-        institucion: p.instituciones_ejecutoras?.nombre || 'Sin Institucion',
-        institucionId: p.institucion_ejecutora_id,
-        gestora: p.gestora || '',
-        regionId: p.region_id,
-        modalidad: p.modalidades?.descripcion || 'Desconocido',
-        modalidadId: p.modalidad_id,
-        estado: p.etapas?.descripcion || 'Activo',
-        sustento: p.sustento || '',
-        year: year,
-        año: Number(p.año) || 0,
-        fase: p.etapas?.fase || '',
-        monto_fondoempleo: Number(p.monto_fondoempleo) || 0,
-        avance: Number(p.avance) || 0,
-        contrapartida: Number(p.contrapartida) || 0,
-        monto_total: (Number(p.monto_fondoempleo) || 0) + (Number(p.contrapartida) || 0),
-        beneficiarios: Number(p.beneficiarios) || 0,
-        avance_tecnico: Number(p.avance_tecnico) || 0,
-        fecha_inicio: p.avance_proyecto?.find((a: any) => a.etapa_id === 1)?.fecha || null,
-        fecha_fin: p.avance_proyecto?.find((a: any) => a.etapa_id === 6)?.fecha || null,
-        avances: p.avance_proyecto || [],
-        grupo_id: p.grupo_id,
-        nombre_grupo: p.grupo?.descripcion || '',
-        provincia: p.provincia || '',
-        especialista_id: p.especialista_id,
-        especialista: p.especialista?.nombre || '',
-        contacto: p.contacto || ''
-      };
+      return mapProyectoRow(p);
     });
   } catch (err) {
     console.error("FATAL ERROR getGestionProyectosData:", err);
@@ -299,7 +202,7 @@ export async function getDashboardStats(especialistaId?: number) {
 }
 
 export async function getRegionData(especialistaId?: number) {
-    // Current implementation uses getDashboardData and aggregates client-side, 
+    // Current implementation uses getDashboardData and aggregates client-side,
     // but we satisfy the named function requirement.
     return await getDashboardData({ especialistaId: especialistaId?.toString() });
 }
@@ -311,35 +214,11 @@ export async function getInstitucionData(especialistaId?: number) {
 
 export async function getProyectoCompletoById(id: string) {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const { rows } = await query(`${PROYECTO_BASE_SELECT} where p.id = $1::int`, [id]);
+    const p: any = rows[0];
 
-    const { data: p, error } = await supabase
-      .from('proyectos')
-      .select(`
-        *,
-        lineas (descripcion),
-        ejes (descripcion),
-        regiones (descripcion),
-        instituciones_ejecutoras (nombre),
-        modalidades (descripcion),
-        etapas (descripcion, fase),
-        especialista:especialistas(nombre),
-        avance_proyecto (
-          id,
-          fecha,
-          etapa_id,
-          sustento,
-          monto,
-          etapa:etapas(descripcion)
-        )
-      `)
-      .eq('id', id)
-      .single();
-
-    if (error || !p) {
-      console.error("Error fetching project by id:", error);
+    if (!p) {
+      console.error("Error fetching project by id: not found", id);
       return null;
     }
 
@@ -351,20 +230,20 @@ export async function getProyectoCompletoById(id: string) {
       codigo: p.codigo_proyecto,
       codigo_proyecto: p.codigo_proyecto,
       nombre: p.nombre,
-      institucion: p.instituciones_ejecutoras?.nombre || 'Desconocido',
+      institucion: p.institucion_nombre || 'Desconocido',
       institucionId: p.institucion_ejecutora_id,
       gestora: p.gestora,
-      linea: p.lineas?.descripcion || 'Desconocido',
+      linea: p.linea_descripcion || 'Desconocido',
       lineaId: p.linea_id,
-      eje: p.ejes?.descripcion || 'Desconocido',
+      eje: p.eje_descripcion || 'Desconocido',
       ejeId: p.eje_id,
-      etapa: p.etapas?.descripcion || 'Desconocido',
+      etapa: p.etapa_descripcion || 'Desconocido',
       etapaId: p.etapa_id,
-      region: p.regiones?.descripcion || 'Multirregional',
+      region: p.region_descripcion || 'Multirregional',
       regionId: p.region_id,
-      modalidad: p.modalidades?.descripcion || 'Desconocido',
+      modalidad: p.modalidad_descripcion || 'Desconocido',
       modalidadId: p.modalidad_id,
-      estado: p.etapas?.descripcion || 'Activo',
+      estado: p.etapa_descripcion || 'Activo',
       sustento: p.sustento || '',
       year: year,
       año: Number(p.año) || 0,
@@ -374,16 +253,16 @@ export async function getProyectoCompletoById(id: string) {
       monto_total: Number(p.monto_total) || 0,
       beneficiarios: Number(p.beneficiarios) || 0,
       avance_tecnico: Number(p.avance_tecnico) || 0,
-      fecha_inicio: p.avance_proyecto?.find((a: any) => Number(a.etapa_id) === 1)?.fecha || null,
-      fecha_fin: p.avance_proyecto?.find((a: any) => Number(a.etapa_id) === 6)?.fecha || null,
-      avances: p.avance_proyecto?.map((av: any) => ({
+      fecha_inicio: p.avances?.find((a: any) => Number(a.etapa_id) === 1)?.fecha || null,
+      fecha_fin: p.avances?.find((a: any) => Number(a.etapa_id) === 6)?.fecha || null,
+      avances: p.avances?.map((av: any) => ({
         ...av,
         etapa_nombre: av.etapa?.descripcion || `Etapa ${av.etapa_id}`
       })) || [],
       grupo_id: p.grupo_id,
       provincia: p.provincia || '',
       especialista_id: p.especialista_id,
-      especialista: p.especialista?.nombre || '',
+      especialista: p.especialista_nombre || '',
       contacto: p.contacto || ''
     };
   } catch (err) {
@@ -395,21 +274,8 @@ export async function getProyectoCompletoById(id: string) {
 const _getLineas = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('lineas')
-        .select('id, descripcion')
-        .order('id', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching lines:", error);
-        return [];
-      }
-
-      return data.map((item: any) => ({
+      const { rows } = await query('select id, descripcion from lineas order by id asc');
+      return rows.map((item: any) => ({
         value: item.id,
         label: `L${item.id} - ${item.descripcion}`
       }));
@@ -426,21 +292,8 @@ export async function getLineas() { return _getLineas(); }
 const _getEjes = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('ejes')
-        .select('id, descripcion')
-        .order('id', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching ejes:", error);
-        return [];
-      }
-
-      return data.map((item: any) => ({
+      const { rows } = await query('select id, descripcion from ejes order by id asc');
+      return rows.map((item: any) => ({
         value: item.id,
         label: `${item.id} - ${item.descripcion}`
       }));
@@ -457,21 +310,8 @@ export async function getEjes() { return _getEjes(); }
 const _getModalidades = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('modalidades')
-        .select('id, descripcion')
-        .order('id', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching modalidades:", error);
-        return [];
-      }
-
-      return data.map((item: any) => ({
+      const { rows } = await query('select id, descripcion from modalidades order by id asc');
+      return rows.map((item: any) => ({
         value: item.id,
         label: `${item.id} - ${item.descripcion}`
       }));
@@ -488,21 +328,8 @@ export async function getModalidades() { return _getModalidades(); }
 const _getEspecialistas = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('especialistas')
-        .select('id, nombre')
-        .order('nombre', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching especialistas:", error);
-        return [];
-      }
-
-      return data.map((item: any) => ({
+      const { rows } = await query('select id, nombre from especialistas order by nombre asc');
+      return rows.map((item: any) => ({
         value: item.id,
         label: item.nombre
       }));
@@ -519,24 +346,8 @@ export async function getEspecialistas() { return _getEspecialistas(); }
 const _fetchDynamicYears = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('proyectos')
-        .select('año');
-
-      if (error) {
-        console.error("Error fetching years:", error);
-        return [];
-      }
-
-      const uniqueYears = Array.from(new Set((data as any[]).map(d => Number(d.año))))
-        .filter(y => !isNaN(y) && y > 0)
-        .sort((a, b) => b - a);
-
-      return uniqueYears;
+      const { rows } = await query('select distinct "año" from proyectos where "año" is not null and "año" > 0 order by "año" desc');
+      return rows.map((d: any) => Number(d.año)).filter((y: number) => !isNaN(y) && y > 0);
     } catch (err) {
       console.error("FATAL ERROR fetchDynamicYears:", err);
       return [];
@@ -550,26 +361,13 @@ export async function fetchDynamicYears() { return _fetchDynamicYears(); }
 const _getEtapas = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('etapas')
-        .select('id, descripcion')
-        .not('descripcion', 'ilike', 'no habilitada')
-        .order('id', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching stages:", error);
-        return [];
-      }
-
-      if (!data) return [];
-      // Mantener el orden del .order('id') eliminando duplicados si los hubiera
+      const { rows } = await query(
+        "select id, descripcion from etapas where not (descripcion ilike 'no habilitada') order by id asc"
+      );
+      // Mantener el orden del order by id eliminando duplicados si los hubiera
       const uniqueDescriptions: string[] = [];
       const seen = new Set();
-      data.forEach((d: any) => {
+      rows.forEach((d: any) => {
         if (d.descripcion && !seen.has(d.descripcion)) {
           seen.add(d.descripcion);
           uniqueDescriptions.push(d.descripcion);
@@ -589,21 +387,8 @@ export async function getEtapas() { return _getEtapas(); }
 const _getEtapasList = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('etapas')
-        .select('id, descripcion')
-        .order('id', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching etapas list:", error);
-        return [];
-      }
-
-      return data.map((item: any) => ({
+      const { rows } = await query('select id, descripcion from etapas order by id asc');
+      return rows.map((item: any) => ({
         value: item.id,
         label: item.descripcion
       }));
@@ -620,21 +405,8 @@ export async function getEtapasList() { return _getEtapasList(); }
 const _getFasesOptions = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('etapas')
-        .select('id, fase')
-        .order('id', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching fases list unique:", error);
-        return [];
-      }
-
-      return [...new Set(data.map((item: any) => item.fase))].filter(Boolean) as string[];
+      const { rows } = await query('select id, fase from etapas order by id asc');
+      return [...new Set(rows.map((item: any) => item.fase))].filter(Boolean) as string[];
     } catch (err) {
       console.error("FATAL ERROR getFasesOptions:", err);
       return [];
@@ -650,70 +422,48 @@ export async function getFasesOptions() { return _getFasesOptions(); }
 
 export async function getTimelineData(especialistaId?: number) {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    let query = supabase
-      .from('proyectos')
-      .select(`
-        id, nombre, etapa_id, eje_id, linea_id, region_id, codigo_proyecto, gestora, monto_fondoempleo, avance,
-        ejes (descripcion),
-        lineas (descripcion),
-        instituciones_ejecutoras (nombre),
-        regiones (descripcion),
-        etapas (descripcion, fase),
-        grupo_id,
-        grupo (id, descripcion, orden),
-        avance_tecnico, provincia, especialista_id, contacto,
-        especialista:especialistas(nombre),
-        avance_proyecto (id, fecha, etapa_id, sustento)
-      `);
-
+    const conditions: string[] = [];
+    const params: unknown[] = [];
     if (especialistaId && Number(especialistaId) !== 0 && String(especialistaId) !== 'all' && String(especialistaId) !== 'undefined') {
-      query = query.eq('especialista_id', especialistaId);
+      params.push(Number(especialistaId));
+      conditions.push(`p.especialista_id = $${params.length}::int`);
     }
+    const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
 
-    const { data, error } = await query
-      .order('id', { ascending: true });
+    const { rows } = await query(`${PROYECTO_BASE_SELECT} ${where} order by p.id asc`, params);
 
-    if (error) {
-      console.error("Error Timeline:", error);
-      return [];
-    }
-
-    if (!data || data.length === 0) return [];
+    if (!rows || rows.length === 0) return [];
 
     // Filtro seguro en memoria para evitar colapso del inner join
-    const proyectosValidos = data.filter((p: any) => {
-      const desc = p.etapas?.descripcion?.toLowerCase() || '';
+    const proyectosValidos = rows.filter((p: any) => {
+      const desc = p.etapa_descripcion?.toLowerCase() || '';
       return !desc.includes('no habilitada');
     });
 
     return proyectosValidos.map((p: any) => ({
       id: p.id,
       nombre: p.nombre,
-      estado: p.etapas?.descripcion || 'Activo',
+      estado: p.etapa_descripcion || 'Activo',
       grupo_id: p.grupo_id,
-      grupo_descripcion: p.grupo?.descripcion || 'Sin Grupo',
-      grupo_orden: p.grupo?.orden || 999,
+      grupo_descripcion: p.grupo_descripcion || 'Sin Grupo',
+      grupo_orden: p.grupo_orden || 999,
       eje_id: p.eje_id,
       linea_id: p.linea_id,
-      eje: p.ejes?.descripcion || `Eje ${p.eje_id}`,
-      linea: p.lineas?.descripcion || `Línea ${p.linea_id}`,
+      eje: p.eje_descripcion || `Eje ${p.eje_id}`,
+      linea: p.linea_descripcion || `Línea ${p.linea_id}`,
       codigo: p.codigo_proyecto || '-',
       codigo_proyecto: p.codigo_proyecto || '-',
       gestora: p.gestora || '-',
       monto_fondoempleo: Number(p.monto_fondoempleo) || 0,
       avance: Number(p.avance) || 0,
-      institucion: p.instituciones_ejecutoras?.nombre || '-',
-      region: p.regiones?.descripcion || '-',
-      etapa: p.etapas?.descripcion || 'Sin Etapa',
-      fase: p.etapas?.fase || '',
+      institucion: p.institucion_nombre || '-',
+      region: p.region_descripcion || '-',
+      etapa: p.etapa_descripcion || 'Sin Etapa',
+      fase: p.etapa_fase || '',
       avance_tecnico: Number(p.avance_tecnico) || 0,
-      fecha_inicio: p.avance_proyecto?.find((a: any) => a.etapa_id === 1)?.fecha || null,
-      fecha_fin: p.avance_proyecto?.find((a: any) => a.etapa_id === 6)?.fecha || null,
-      avances: (p.avance_proyecto || []).map((a: any) => ({
+      fecha_inicio: p.avances?.find((a: any) => a.etapa_id === 1)?.fecha || null,
+      fecha_fin: p.avances?.find((a: any) => a.etapa_id === 6)?.fecha || null,
+      avances: (p.avances || []).map((a: any) => ({
         id: a.id,
         fecha: a.fecha,
         etapa_id: a.etapa_id,
@@ -721,7 +471,7 @@ export async function getTimelineData(especialistaId?: number) {
       })),
       provincia: p.provincia || '',
       especialista_id: p.especialista_id,
-      especialista: p.especialista?.nombre || '',
+      especialista: p.especialista_nombre || '',
       contacto: p.contacto || ''
     }));
   } catch (err) {
@@ -730,24 +480,24 @@ export async function getTimelineData(especialistaId?: number) {
   }
 }
 
+// --- PAGOS GESTORAS (para GestoraChart) ---
+
+export async function getPagosGestoras() {
+  try {
+    const { rows } = await query('select gestora, monto, mes_pago::text as mes_pago from pagos_gestoras');
+    return rows;
+  } catch (err) {
+    console.error("FATAL ERROR getPagosGestoras:", err);
+    return [];
+  }
+}
+
 // --- CORPORATIVO ACTIONS ---
 
 export async function getFinanzasAnual() {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    const { data, error } = await supabase
-      .from('finanzas_anual')
-      .select('*')
-      .order('año', { ascending: true });
-
-    if (error) {
-      console.error("Error fetching finanzas anual:", error);
-      return [];
-    }
-    return data;
+    const { rows } = await query('select * from finanzas_anual order by "año" asc');
+    return rows as any[];
   } catch (err) {
     console.error("FATAL ERROR getFinanzasAnual:", err);
     return [];
@@ -756,21 +506,8 @@ export async function getFinanzasAnual() {
 
 export async function getAportantesAnual() {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    const { data, error } = await supabase
-      .from('aportantes_anual')
-      .select('*')
-      .order('año', { ascending: true })
-      .order('monto', { ascending: false });
-
-    if (error) {
-      console.error("Error fetching aportantes anual:", error);
-      return [];
-    }
-    return data;
+    const { rows } = await query('select * from aportantes_anual order by "año" asc, monto desc');
+    return rows;
   } catch (err) {
     console.error("FATAL ERROR getAportantesAnual:", err);
     return [];
@@ -779,85 +516,92 @@ export async function getAportantesAnual() {
 
 // --- PROYECTOS CRUD ACTIONS ---
 
+/** Valida un nombre de columna dinámico (permite ñ/acentos, rechaza comillas). */
+function colName(col: string): string {
+  if (!/^[\p{L}_][\p{L}\p{N}_]*$/u.test(col)) {
+    throw new Error(`Columna no válida: "${col}"`);
+  }
+  return `"${col}"`;
+}
+
+async function getAuditUserId(): Promise<string | null> {
+  try {
+    const session = await getSession();
+    return session?.user.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function createProyecto(formData: any) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const userId = await getAuditUserId();
+  const cols = Object.keys(formData);
+  const values = cols.map((c) => formData[c]);
+  const placeholders = cols.map((_, i) => `$${i + 1}`);
 
-  const { data, error } = await supabase
-    .from('proyectos')
-    .insert([formData])
-    .select();
+  try {
+    const rows = await withAuditUser(userId, async (client) => {
+      const result = await client.query(
+        `insert into proyectos (${cols.map(colName).join(', ')}) values (${placeholders.join(', ')}) returning *`,
+        values,
+      );
+      return result.rows;
+    });
 
-  if (error) {
+    revalidatePath('/dashboard/gestion-proyectos');
+    revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
+    return rows;
+  } catch (error: any) {
     console.error("Error creating proyecto:", error);
     throw new Error(error.message);
   }
-
-  revalidatePath('/dashboard/gestion-proyectos');
-  revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
-  return data;
 }
 
 export async function updateProyecto(id: any, formData: any) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const userId = await getAuditUserId();
+  const cols = Object.keys(formData);
+  const values = cols.map((c) => formData[c]);
+  const assignments = cols.map((c, i) => `${colName(c)} = $${i + 1}`);
 
-  const { data, error } = await supabase
-    .from('proyectos')
-    .update(formData)
-    .eq('id', id)
-    .select();
+  try {
+    const rows = await withAuditUser(userId, async (client) => {
+      const result = await client.query(
+        `update proyectos set ${assignments.join(', ')} where id = $${cols.length + 1}::int returning *`,
+        [...values, id],
+      );
+      return result.rows;
+    });
 
-  if (error) {
+    revalidatePath('/dashboard/gestion-proyectos');
+    revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
+    return rows;
+  } catch (error: any) {
     console.error("Error updating proyecto:", error);
     throw new Error(error.message);
   }
-
-  revalidatePath('/dashboard/gestion-proyectos');
-  revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
-  return data;
 }
 
 export async function deleteProyecto(id: any) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const userId = await getAuditUserId();
+  try {
+    await withAuditUser(userId, async (client) => {
+      await client.query('delete from proyectos where id = $1::int', [id]);
+    });
 
-  const { error } = await supabase
-    .from('proyectos')
-    .delete()
-    .eq('id', id);
-
-  if (error) {
+    revalidatePath('/dashboard/gestion-proyectos');
+    revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
+    return { success: true };
+  } catch (error: any) {
     console.error("Error deleting proyecto:", error);
     throw new Error(error.message);
   }
-
-  revalidatePath('/dashboard/gestion-proyectos');
-  revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
-  return { success: true };
 }
 
 const _getInstituciones = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('instituciones_ejecutoras')
-        .select('id, nombre')
-        .order('nombre', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching instituciones:", error);
-        return [];
-      }
-
-      return data.map((item: any) => ({
+      const { rows } = await query('select id, nombre from instituciones_ejecutoras order by nombre asc');
+      return rows.map((item: any) => ({
         value: item.id,
         label: item.nombre
       }));
@@ -874,21 +618,8 @@ export async function getInstituciones() { return _getInstituciones(); }
 const _getRegiones = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('regiones')
-        .select('id, descripcion')
-        .order('descripcion', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching regiones:", error);
-        return [];
-      }
-
-      return data.map((item: any) => ({
+      const { rows } = await query('select id, descripcion from regiones order by descripcion asc');
+      return rows.map((item: any) => ({
         value: item.id,
         label: item.descripcion
       }));
@@ -904,148 +635,117 @@ export async function getRegiones() { return _getRegiones(); }
 
 // --- AVANCE PROYECTO ACTIONS ---
 
-async function recalculateProyectoAvance(proyectoId: any, supabase: any, currentMonto?: number) {
+async function recalculateProyectoAvance(proyectoId: any, client: { query: (text: string, params?: unknown[]) => Promise<any> }) {
   const today = new Date().toISOString().split('T')[0];
-  
-  // 1. Obtener TODO el historial de avances para este proyecto
-  const { data: allAvances, error: fetchError } = await supabase
-    .from('avance_proyecto')
-    .select('etapa_id, sustento, fecha, monto')
-    .eq('proyecto_id', proyectoId)
-    .lte('fecha', today)                 // 2. Filtrar fecha <= hoy (ignora proyecciones)
-    .order('fecha', { ascending: false }) // 3. Ordenar por fecha descendente
-    .order('id', { ascending: false });
 
-  if (fetchError) {
-    console.error("Error al obtener historial para sincronización:", fetchError);
-    return;
-  }
+  // 1. Obtener el historial de avances reales (fecha <= hoy, sin proyecciones),
+  //    ordenado del más reciente al más antiguo.
+  const { rows: allAvances } = await client.query(
+    `select etapa_id, sustento, fecha::text as fecha, monto
+       from avance_proyecto
+      where proyecto_id = $1::int and fecha <= $2::date
+      order by fecha desc, id desc`,
+    [proyectoId, today],
+  );
 
   if (allAvances && allAvances.length > 0) {
-    // 4. El avance más reciente (índice 0) define la etapa actual
+    // 2. El avance más reciente (índice 0) define la etapa actual
     const latestAvance = allAvances[0];
     const newEtapaId = latestAvance.etapa_id;
 
-    // 5. Asigna como sustento el texto del avance más reciente. Si está vacío, busca hacia atrás.
+    // 3. Asigna como sustento el texto del avance más reciente. Si está vacío, busca hacia atrás.
     const sustentoFinal = allAvances.find((av: any) => av.sustento && av.sustento.trim() !== '')?.sustento || '';
 
     // Calculamos el avance financiero total (solo de avances reales <= hoy)
     const totalAvanceFinanciero = allAvances.reduce((sum: number, item: any) => sum + (Number(item.monto) || 0), 0);
 
     // Actualizamos el proyecto padre
-    const { error: updateError } = await supabase
-      .from('proyectos')
-      .update({ 
-        etapa_id: newEtapaId,
-        sustento: sustentoFinal,
-        avance: totalAvanceFinanciero
-      })
-      .eq('id', proyectoId);
+    await client.query(
+      'update proyectos set etapa_id = $1, sustento = $2, avance = $3 where id = $4::int',
+      [newEtapaId, sustentoFinal, totalAvanceFinanciero, proyectoId],
+    );
 
-    if (updateError) {
-      console.error("Error al sincronizar proyecto padre:", updateError);
-    }
-    
-    // 6. CRÍTICO: Limpiar caché de Next.js
+    // 4. CRÍTICO: Limpiar caché de Next.js
     revalidatePath('/dashboard/gestion-proyectos');
   }
 }
 
 export async function addAvanceProyecto(proyectoId: any, avanceData: any) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const userId = await getAuditUserId();
+  const payload = { ...avanceData, proyecto_id: proyectoId, monto: Number(avanceData.monto) || 0 };
+  const cols = Object.keys(payload);
+  const values = cols.map((c) => (payload as any)[c]);
+  const placeholders = cols.map((_, i) => `$${i + 1}`);
 
-  const { data, error: insertError } = await supabase
-    .from('avance_proyecto')
-    .insert([{ 
-      ...avanceData, 
-      proyecto_id: proyectoId,
-      monto: Number(avanceData.monto) || 0
-    }])
-    .select()
-    .single();
+  try {
+    const data = await withAuditUser(userId, async (client) => {
+      const result = await client.query(
+        `insert into avance_proyecto (${cols.map(colName).join(', ')}) values (${placeholders.join(', ')}) returning *`,
+        values,
+      );
+      const inserted = result.rows[0];
+      await recalculateProyectoAvance(proyectoId, client);
+      return inserted;
+    });
 
-  if (insertError) {
-    console.error("Error inserting avance:", insertError);
-    throw new Error(insertError.message);
+    revalidatePath('/dashboard/gestion-proyectos');
+    return data;
+  } catch (error: any) {
+    console.error("Error inserting avance:", error);
+    throw new Error(error.message);
   }
-
-  await recalculateProyectoAvance(proyectoId, supabase, Number(avanceData.monto) || 0);
-
-  revalidatePath('/dashboard/gestion-proyectos');
-  return data;
 }
 
 export async function updateAvanceProyecto(id: any, avanceData: any) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const userId = await getAuditUserId();
+  const payload = { ...avanceData, monto: Number(avanceData.monto) || 0 };
+  const cols = Object.keys(payload);
+  const values = cols.map((c) => (payload as any)[c]);
+  const assignments = cols.map((c, i) => `${colName(c)} = $${i + 1}`);
 
-  const { data, error: updateError } = await supabase
-    .from('avance_proyecto')
-    .update({
-      ...avanceData,
-      monto: Number(avanceData.monto) || 0
-    })
-    .eq('id', id)
-    .select()
-    .single();
+  try {
+    const data = await withAuditUser(userId, async (client) => {
+      const result = await client.query(
+        `update avance_proyecto set ${assignments.join(', ')} where id = $${cols.length + 1} returning *`,
+        [...values, id],
+      );
+      const updated = result.rows[0];
+      if (updated?.proyecto_id) {
+        await recalculateProyectoAvance(updated.proyecto_id, client);
+      }
+      return updated;
+    });
 
-  if (updateError) {
-    console.error("Error updating avance:", updateError);
-    throw new Error(updateError.message);
+    revalidatePath('/dashboard/gestion-proyectos');
+    return data;
+  } catch (error: any) {
+    console.error("Error updating avance:", error);
+    throw new Error(error.message);
   }
-
-  if (data?.proyecto_id) {
-    await recalculateProyectoAvance(data.proyecto_id, supabase, Number(avanceData.monto) || 0);
-  }
-
-  revalidatePath('/dashboard/gestion-proyectos');
-  return data;
 }
 
 
 export async function deleteAvanceProyecto(id: any, proyectoId: any) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const userId = await getAuditUserId();
+  try {
+    await withAuditUser(userId, async (client) => {
+      await client.query('delete from avance_proyecto where id = $1', [id]);
+      await recalculateProyectoAvance(proyectoId, client);
+    });
 
-  const { error: deleteError } = await supabase
-    .from('avance_proyecto')
-    .delete()
-    .eq('id', id);
-
-  if (deleteError) {
-    console.error("Error deleting avance:", deleteError);
-    throw new Error(deleteError.message);
+    revalidatePath('/dashboard/gestion-proyectos');
+    return { success: true };
+  } catch (error: any) {
+    console.error("Error deleting avance:", error);
+    throw new Error(error.message);
   }
-
-  await recalculateProyectoAvance(proyectoId, supabase);
-
-  revalidatePath('/dashboard/gestion-proyectos');
-  return { success: true };
 }
 
 const _getGruposProyectos = unstable_cache(
   async () => {
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-      const { data, error } = await supabase
-        .from('grupo')
-        .select('id, descripcion, orden')
-        .eq('tipo', 2)
-        .order('orden', { ascending: true });
-
-      if (error) {
-        console.error("Error fetching grupos proyectos:", error);
-        return [];
-      }
-
-      return data.map((item: any) => ({
+      const { rows } = await query('select id, descripcion, orden from grupo where tipo = 2 order by orden asc');
+      return rows.map((item: any) => ({
         value: item.id,
         label: `${item.orden} - ${item.descripcion}`
       }));

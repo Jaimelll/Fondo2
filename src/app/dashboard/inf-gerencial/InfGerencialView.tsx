@@ -7,7 +7,6 @@ import {
     LineChart, Line, Cell, LabelList
 } from 'recharts';
 import { Search, X } from 'lucide-react';
-import { createClient } from '@/utils/supabase/client';
 import { getPresupuestoMensual, getPresupuestoComparativo } from './actions';
 import { PresentationButton } from '@/components/PresentationButton';
 
@@ -161,7 +160,6 @@ export default function InfGerencialView({
     const [isLoadingBudget, setIsLoadingBudget] = useState(false);
     const [highlightedEmpresa, setHighlightedEmpresa] = useState<string | null>(null);
     const [isMobile, setIsMobile] = useState(false);
-    const supabase = createClient();
 
     useEffect(() => {
         const handleResize = () => setIsMobile(window.innerWidth < 768);

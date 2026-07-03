@@ -1,55 +1,75 @@
 "use server";
 
-import { createClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
+import { query } from "@/lib/db";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+// ─────────────────────────────────────────────────────────────────────────────
+// Capa de datos: Postgres directo. Los embeds de PostgREST (eje:eje_id(...),
+// avances:avance_beca(...)) se replican con LEFT JOIN + json_build_object /
+// json_agg, devolviendo exactamente las mismas formas anidadas.
+// ─────────────────────────────────────────────────────────────────────────────
 
-function getSupabase() {
-  return createClient(supabaseUrl, supabaseServiceKey);
-}
+const BECA_BASE_SELECT = `
+  select
+    b.id, b.nombre, b.documento, b.eje_id, b.linea_id, b.etapa_id, b.modalidad_id,
+    b.institucion_id, b.condicion_id, b.grupo_id, b.presupuesto, b.avance, b.beneficiarios,
+    b.provincia_procedencia, b.distrito_procedencia, b.celular, b.correo_electronico,
+    b.tipo_estudio_id, b.naturaleza_ie_id, b.especialidad, b.formato_id,
+    b.fecha_nacimiento::text as fecha_nacimiento, b.sexo, b.empresa_id,
+    case when ej.id is not null then json_build_object('descripcion', ej.descripcion) end as eje,
+    case when li.id is not null then json_build_object('descripcion', li.descripcion) end as linea,
+    case when et.id is not null then json_build_object('descripcion', et.descripcion) end as etapa,
+    case when mo.id is not null then json_build_object('descripcion', mo.descripcion) end as modalidad,
+    case when i.id  is not null then json_build_object('descripcion', i.descripcion) end as institucion,
+    case when c.id  is not null then json_build_object('descripcion', c.descripcion) end as condicion,
+    case when g.id  is not null then json_build_object('descripcion', g.descripcion) end as grupo,
+    coalesce(av.avances, '[]'::json) as avances
+  from becas_nueva b
+  left join ejes ej       on ej.id = b.eje_id
+  left join lineas li     on li.id = b.linea_id
+  left join etapas et     on et.id = b.etapa_id
+  left join modalidades mo on mo.id = b.modalidad_id
+  left join institucion i on i.id  = b.institucion_id
+  left join condicion c   on c.id  = b.condicion_id
+  left join grupo g       on g.id  = b.grupo_id
+  left join lateral (
+    select json_agg(json_build_object(
+      'id', a.id, 'fecha', a.fecha::text, 'etapa_id', a.etapa_id,
+      'sustento', a.sustento, 'monto', a.monto
+    ) order by a.id) as avances
+    from avance_beca a
+    where a.beca_id = b.id
+  ) av on true
+`;
 
 export async function getServiciosGestionData(filters?: { eje?: string; linea?: string; etapa?: string; modalidad?: string; condicion?: string; searchTerm?: string; institucion_id?: string; tipo_estudio_id?: string; grupo_id?: string; id_exacto?: string }) {
-  const supabase = getSupabase();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  const add = (sqlFragment: string, value: unknown) => {
+    params.push(value);
+    conditions.push(sqlFragment.replace('?', `$${params.length}`));
+  };
 
-  let query = supabase
-    .from('becas_nueva')
-    .select(`
-      id, nombre, documento, eje_id, linea_id, etapa_id, modalidad_id, institucion_id, condicion_id, grupo_id, presupuesto, avance, beneficiarios,
-      provincia_procedencia, distrito_procedencia, celular, correo_electronico, tipo_estudio_id, naturaleza_ie_id, especialidad, formato_id, fecha_nacimiento, sexo, empresa_id,
-      eje:eje_id(descripcion),
-      linea:linea_id(descripcion),
-      etapa:etapa_id(descripcion),
-      modalidad:modalidad_id(descripcion),
-      institucion:institucion_id(descripcion),
-      condicion:condicion_id(descripcion),
-      grupo:grupo_id(descripcion),
-      avances:avance_beca(id, fecha, etapa_id, sustento, monto)
-    `)
-    .order('id', { ascending: true });
+  if (filters?.searchTerm) add('b.nombre ilike ?', `%${filters.searchTerm}%`);
+  if (filters?.eje && filters.eje !== 'all') add('b.eje_id = ?::int', Number(filters.eje));
+  if (filters?.linea && filters.linea !== 'all') add('b.linea_id = ?::int', Number(filters.linea));
+  if (filters?.etapa && filters.etapa !== 'all') add('b.etapa_id = ?::int', Number(filters.etapa));
+  if (filters?.modalidad && filters.modalidad !== 'all') add('b.modalidad_id = ?::int', Number(filters.modalidad));
+  if (filters?.condicion && filters.condicion !== 'all') add('b.condicion_id = ?::int', Number(filters.condicion));
+  if (filters?.institucion_id && filters.institucion_id !== 'all') add('b.institucion_id = ?::int', Number(filters.institucion_id));
+  if (filters?.tipo_estudio_id && filters.tipo_estudio_id !== 'all') add('b.tipo_estudio_id = ?::int', Number(filters.tipo_estudio_id));
+  if (filters?.grupo_id && filters.grupo_id !== 'all') add('b.grupo_id = ?::int', Number(filters.grupo_id));
+  if (filters?.id_exacto) add('b.id = ?::int', Number(filters.id_exacto));
 
-  if (filters?.searchTerm) {
-    query = query.ilike('nombre', `%${filters.searchTerm}%`);
-  }
-  if (filters?.eje && filters.eje !== 'all') query = query.eq('eje_id', filters.eje);
-  if (filters?.linea && filters.linea !== 'all') query = query.eq('linea_id', filters.linea);
-  if (filters?.etapa && filters.etapa !== 'all') query = query.eq('etapa_id', filters.etapa);
-  if (filters?.modalidad && filters.modalidad !== 'all') query = query.eq('modalidad_id', filters.modalidad);
-  if (filters?.condicion && filters.condicion !== 'all') query = query.eq('condicion_id', filters.condicion);
-  if (filters?.institucion_id && filters.institucion_id !== 'all') query = query.eq('institucion_id', filters.institucion_id);
-  if (filters?.tipo_estudio_id && filters.tipo_estudio_id !== 'all') query = query.eq('tipo_estudio_id', filters.tipo_estudio_id);
-  if (filters?.grupo_id && filters.grupo_id !== 'all') query = query.eq('grupo_id', filters.grupo_id);
-  if (filters?.id_exacto) query = query.eq('id', filters.id_exacto);
+  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
 
-  const { data, error } = await query;
-
-  if (error) {
-    console.error("Error fetching servicios gestion data:", error.message, error.code, error.details, error.hint);
+  try {
+    const { rows } = await query(`${BECA_BASE_SELECT} ${where} order by b.id asc`, params);
+    return rows;
+  } catch (err: any) {
+    console.error("Error fetching servicios gestion data:", err.message);
     return [];
   }
-
-  return data || [];
 }
 
 function cleanBecaPayload(formData: any) {
@@ -92,23 +112,21 @@ function cleanBecaPayload(formData: any) {
 
 export async function createServicio(formData: any) {
   try {
-    const supabase = getSupabase();
     const payloadLimpio = cleanBecaPayload(formData);
 
     console.log("Payload limpio a enviar:", payloadLimpio);
 
-    const { data, error } = await supabase
-      .from('becas_nueva')
-      .insert([payloadLimpio])
-      .select();
+    const cols = Object.keys(payloadLimpio);
+    const values = cols.map((c) => payloadLimpio[c]);
+    const placeholders = cols.map((_, i) => `$${i + 1}`);
 
-    if (error) {
-      console.error("Error creating servicio inside Supabase:", error);
-      return { success: false, error: error.message };
-    }
+    const { rows } = await query(
+      `insert into becas_nueva (${cols.map((c) => `"${c}"`).join(', ')}) values (${placeholders.join(', ')}) returning *`,
+      values,
+    );
 
     revalidatePath('/dashboard/gestion-servicios');
-    return { success: true, data };
+    return { success: true, data: rows };
   } catch (err: any) {
     console.error("Uncaught error in createServicio:", err);
     return { success: false, error: err.message };
@@ -117,24 +135,21 @@ export async function createServicio(formData: any) {
 
 export async function updateServicio(id: any, formData: any) {
   try {
-    const supabase = getSupabase();
     const payloadLimpio = cleanBecaPayload(formData);
 
     console.log("Payload limpio a enviar:", payloadLimpio);
 
-    const { data, error } = await supabase
-      .from('becas_nueva')
-      .update(payloadLimpio)
-      .eq('id', id)
-      .select();
+    const cols = Object.keys(payloadLimpio);
+    const values = cols.map((c) => payloadLimpio[c]);
+    const assignments = cols.map((c, i) => `"${c}" = $${i + 1}`);
 
-    if (error) {
-      console.error("Error updating servicio inside Supabase:", error);
-      return { success: false, error: error.message };
-    }
+    const { rows } = await query(
+      `update becas_nueva set ${assignments.join(', ')} where id = $${cols.length + 1}::int returning *`,
+      [...values, id],
+    );
 
     revalidatePath('/dashboard/gestion-servicios');
-    return { success: true, data };
+    return { success: true, data: rows };
   } catch (err: any) {
     console.error("Uncaught error in updateServicio:", err);
     return { success: false, error: err.message };
@@ -142,22 +157,18 @@ export async function updateServicio(id: any, formData: any) {
 }
 
 export async function deleteServicio(id: any) {
-  const supabase = getSupabase();
-  const { error } = await supabase
-    .from('becas_nueva')
-    .delete()
-    .eq('id', id);
-
-  if (error) {
-    console.error("Error deleting servicio:", error);
-    throw new Error(error.message);
+  try {
+    await query('delete from becas_nueva where id = $1::int', [id]);
+  } catch (err: any) {
+    console.error("Error deleting servicio:", err);
+    throw new Error(err.message);
   }
 
   revalidatePath('/dashboard/gestion-servicios');
   return { success: true };
 }
 
-async function recalculateBecaAvance(becaId: any, supabase: any) {
+async function recalculateBecaAvance(becaId: any) {
   // Los avances se guardan con new Date().toISOString() (UTC) desde el modal, así que el
   // filtro "hasta hoy" debe usar la MISMA referencia UTC. Antes se calculaba en hora Perú
   // (UTC-5), lo que de noche dejaba "hoy" un día atrás y excluía el avance recién creado.
@@ -165,100 +176,74 @@ async function recalculateBecaAvance(becaId: any, supabase: any) {
 
   console.log(`[DEBUG] Recalculating stage for Beca ${becaId} as of ${today}`);
 
-  // 1. Obtener TODO el historial de avances para este servicio
-  const { data: allAvances, error: fetchError } = await supabase
-    .from('avance_beca')
-    .select('etapa_id, sustento, fecha, monto')
-    .eq('beca_id', becaId)
-    .lte('fecha', today)                 // 2. Filtrar fecha <= hoy (ignora proyecciones)
-    .order('fecha', { ascending: false }) // 3. Ordenar por fecha descendente
-    .order('id', { ascending: false });
-
-  if (fetchError) {
-    console.error("[DEBUG] Error fetching history for sync:", fetchError);
-    return;
-  }
+  // 1. Obtener el historial de avances reales (fecha <= hoy, sin proyecciones)
+  const { rows: allAvances } = await query(
+    `select etapa_id, sustento, fecha::text as fecha, monto
+       from avance_beca
+      where beca_id = $1::int and fecha <= $2::date
+      order by fecha desc, id desc`,
+    [becaId, today],
+  );
 
   if (allAvances && allAvances.length > 0) {
-    // 4. El avance más reciente (índice 0) define la etapa actual
-    const latestAvance = allAvances[0];
+    // 2. El avance más reciente (índice 0) define la etapa actual
+    const latestAvance: any = allAvances[0];
     const newEtapaId = latestAvance.etapa_id;
 
-    // 5. Calculamos el avance financiero total (solo de avances reales <= hoy)
+    // 3. Calculamos el avance financiero total (solo de avances reales <= hoy)
     const totalAvanceFinanciero = allAvances.reduce((sum: number, item: any) => sum + (Number(item.monto) || 0), 0);
 
     console.log(`[DEBUG] Updating Beca ${becaId} to Stage ${newEtapaId} | avance=${totalAvanceFinanciero}`);
 
-    // OJO: becas_nueva NO tiene columna 'sustento' (a diferencia de proyectos). Incluirla hacía
-    // que el UPDATE entero fallara con PGRST204 y, al no haber manejo de error, el avance nunca
-    // se actualizaba (fallaba en silencio). El sustento ya queda guardado por avance en avance_beca.
-    const { error: updateError } = await supabase
-      .from('becas_nueva')
-      .update({
-        etapa_id: newEtapaId,
-        avance: totalAvanceFinanciero
-      })
-      .eq('id', becaId);
-
-    if (updateError) {
-      console.error('[recalc] Error al actualizar becas_nueva:', updateError);
-      throw new Error(updateError.message);
-    }
+    // OJO: becas_nueva NO tiene columna 'sustento' (a diferencia de proyectos). El sustento
+    // ya queda guardado por avance en avance_beca.
+    await query(
+      'update becas_nueva set etapa_id = $1, avance = $2 where id = $3::int',
+      [newEtapaId, totalAvanceFinanciero, becaId],
+    );
   } else {
     console.log(`[DEBUG] No valid advance found for Beca ${becaId}. Stage remains unchanged.`);
   }
 }
 
 export async function addAvanceServicio(becaId: any, avanceData: any) {
-  const supabase = getSupabase();
-  
-  const { data, error: insertError } = await supabase
-    .from('avance_beca')
-    .insert([{
-      beca_id: becaId,
-      etapa_id: avanceData.etapa_id,
-      fecha: avanceData.fecha,
-      sustento: avanceData.sustento,
-      monto: Number(avanceData.monto) || 0
-    }])
-    .select()
-    .single();
-
-  if (insertError) {
-    console.error("Error inserting avance:", insertError);
-    throw new Error(insertError.message);
+  let data: any;
+  try {
+    const { rows } = await query(
+      `insert into avance_beca (beca_id, etapa_id, fecha, sustento, monto)
+       values ($1::int, $2, $3, $4, $5) returning *`,
+      [becaId, avanceData.etapa_id, avanceData.fecha, avanceData.sustento, Number(avanceData.monto) || 0],
+    );
+    data = rows[0];
+  } catch (err: any) {
+    console.error("Error inserting avance:", err);
+    throw new Error(err.message);
   }
 
   // El avance económico de becas_nueva se recalcula como la suma de todos los montos del historial.
-  await recalculateBecaAvance(becaId, supabase);
+  await recalculateBecaAvance(becaId);
 
   revalidatePath('/dashboard/gestion-servicios');
   return data;
 }
 
 export async function updateAvanceServicio(id: any, avanceData: any) {
-  const supabase = getSupabase();
-  
-  const { data, error: updateError } = await supabase
-    .from('avance_beca')
-    .update({
-      etapa_id: avanceData.etapa_id,
-      fecha: avanceData.fecha,
-      sustento: avanceData.sustento,
-      monto: Number(avanceData.monto) || 0
-    })
-    .eq('id', id)
-    .select()
-    .single();
-
-  if (updateError) {
-    console.error("Error updating avance:", updateError);
-    throw new Error(updateError.message);
+  let data: any;
+  try {
+    const { rows } = await query(
+      `update avance_beca set etapa_id = $1, fecha = $2, sustento = $3, monto = $4
+       where id = $5 returning *`,
+      [avanceData.etapa_id, avanceData.fecha, avanceData.sustento, Number(avanceData.monto) || 0, id],
+    );
+    data = rows[0];
+  } catch (err: any) {
+    console.error("Error updating avance:", err);
+    throw new Error(err.message);
   }
 
   if (data?.beca_id) {
     // El avance económico se recalcula sumando todo el historial (evita el doble conteo del enfoque incremental anterior).
-    await recalculateBecaAvance(data.beca_id, supabase);
+    await recalculateBecaAvance(data.beca_id);
   }
 
   revalidatePath('/dashboard/gestion-servicios');
@@ -266,139 +251,118 @@ export async function updateAvanceServicio(id: any, avanceData: any) {
 }
 
 export async function deleteAvanceServicio(id: any, becaId: any) {
-  const supabase = getSupabase();
-  
-  const { error: deleteError } = await supabase
-    .from('avance_beca')
-    .delete()
-    .eq('id', id);
-
-  if (deleteError) {
-    console.error("Error deleting avance:", deleteError);
-    throw new Error(deleteError.message);
+  try {
+    await query('delete from avance_beca where id = $1', [id]);
+  } catch (err: any) {
+    console.error("Error deleting avance:", err);
+    throw new Error(err.message);
   }
 
-  await recalculateBecaAvance(becaId, supabase);
+  await recalculateBecaAvance(becaId);
 
   revalidatePath('/dashboard/gestion-servicios');
   return { success: true };
 }
 
 export async function getCondiciones() {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('condicion')
-    .select('id, descripcion, becas_nueva!inner(id)')
-    .order('id', { ascending: true });
-
-  if (error) return [];
-  // Use a Map to deduplicate if the join returns multiple rows per condition (though !inner with distinct usually works better)
-  // Actually, Postgrest join with !inner will return the same condition multiple times if it has multiple becas unless we handle it.
-  // A better way is to use the count filter or just deduplicate in JS if the list is small.
-  const unique = Array.from(new Map(data.map((item: any) => [item.id, { value: item.id, label: item.descripcion }])).values());
-  return unique;
+  try {
+    // Solo condiciones usadas por alguna beca (antes: becas_nueva!inner + dedup en JS)
+    const { rows } = await query(
+      `select distinct c.id, c.descripcion
+         from condicion c
+         join becas_nueva b on b.condicion_id = c.id
+        order by c.id asc`,
+    );
+    return rows.map((item: any) => ({ value: item.id, label: item.descripcion }));
+  } catch {
+    return [];
+  }
 }
 
 export async function getInstitucionesBeca() {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('institucion')
-    .select('id, descripcion, becas_nueva!inner(id)')
-    .order('descripcion', { ascending: true });
-
-  if (error) return [];
-  const unique = Array.from(new Map(data.map((item: any) => [item.id, { value: item.id, label: item.descripcion }])).values());
-  return unique;
+  try {
+    const { rows } = await query(
+      `select distinct i.id, i.descripcion
+         from institucion i
+         join becas_nueva b on b.institucion_id = i.id
+        order by i.descripcion asc`,
+    );
+    return rows.map((item: any) => ({ value: item.id, label: item.descripcion }));
+  } catch {
+    return [];
+  }
 }
 
 export async function getGrupos() {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('grupo')
-    .select('id, descripcion, orden, becas_nueva!inner(id)')
-    .eq('tipo', 1)
-    .order('orden', { ascending: true });
-
-  if (error) {
-    console.error("Error fetching grupos:", error);
+  try {
+    const { rows } = await query(
+      `select distinct g.id, g.descripcion, g.orden
+         from grupo g
+         join becas_nueva b on b.grupo_id = g.id
+        where g.tipo = 1
+        order by g.orden asc`,
+    );
+    return rows.map((item: any) => ({
+      value: item.id,
+      label: `${item.orden} - ${item.descripcion}`
+    }));
+  } catch (err) {
+    console.error("Error fetching grupos:", err);
     return [];
   }
-  return data.map(item => ({ 
-    value: item.id, 
-    label: `${item.orden} - ${item.descripcion}` 
-  }));
 }
 
 export async function getServicioCompletoById(id: number) {
-  const supabase = getSupabase();
-
-  const { data, error } = await supabase
-    .from('becas_nueva')
-    .select(`
-      id, nombre, documento, eje_id, linea_id, etapa_id, modalidad_id, institucion_id, condicion_id, grupo_id, presupuesto, avance, beneficiarios,
-      provincia_procedencia, distrito_procedencia, celular, correo_electronico, tipo_estudio_id, naturaleza_ie_id, especialidad, formato_id, fecha_nacimiento, sexo, empresa_id,
-      eje:eje_id(descripcion),
-      linea:linea_id(descripcion),
-      etapa:etapa_id(descripcion),
-      modalidad:modalidad_id(descripcion),
-      institucion:institucion_id(descripcion),
-      condicion:condicion_id(descripcion),
-      grupo:grupo_id(descripcion),
-      avances:avance_beca(id, fecha, etapa_id, sustento, monto)
-    `)
-    .eq('id', id)
-    .single();
-
-  if (error) {
-    console.error(`Error fetching servicio ${id}:`, error);
+  try {
+    const { rows } = await query(`${BECA_BASE_SELECT} where b.id = $1::int`, [id]);
+    if (!rows[0]) {
+      console.error(`Error fetching servicio ${id}: not found`);
+      return null;
+    }
+    return rows[0];
+  } catch (err) {
+    console.error(`Error fetching servicio ${id}:`, err);
     return null;
   }
-
-  return data;
 }
 
 export async function getTiposEstudio() {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('tipo_estudio')
-    .select('id, descripcion, becas_nueva!inner(id)')
-    .order('id', { ascending: true });
-
-  if (error) return [];
-  const unique = Array.from(new Map(data.map((item: any) => [item.id, { value: item.id, label: item.descripcion }])).values());
-  return unique;
+  try {
+    const { rows } = await query(
+      `select distinct t.id, t.descripcion
+         from tipo_estudio t
+         join becas_nueva b on b.tipo_estudio_id = t.id
+        order by t.id asc`,
+    );
+    return rows.map((item: any) => ({ value: item.id, label: item.descripcion }));
+  } catch {
+    return [];
+  }
 }
 
 export async function getNaturalezasIE() {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('naturaleza_ie')
-    .select('id, descripcion')
-    .order('id', { ascending: true });
-
-  if (error) return [];
-  return data.map(item => ({ value: item.id, label: item.descripcion }));
+  try {
+    const { rows } = await query('select id, descripcion from naturaleza_ie order by id asc');
+    return rows.map((item: any) => ({ value: item.id, label: item.descripcion }));
+  } catch {
+    return [];
+  }
 }
 
 export async function getFormatos() {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('formato')
-    .select('id, descripcion')
-    .order('id', { ascending: true });
-
-  if (error) return [];
-  return data.map(item => ({ value: item.id, label: item.descripcion }));
+  try {
+    const { rows } = await query('select id, descripcion from formato order by id asc');
+    return rows.map((item: any) => ({ value: item.id, label: item.descripcion }));
+  } catch {
+    return [];
+  }
 }
 
 export async function getEmpresas() {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('empresas')
-    .select('ruc, razon_social')
-    .order('razon_social', { ascending: true });
-
-  if (error) return [];
-  return data.map(item => ({ value: item.ruc, label: `${item.ruc} - ${item.razon_social}` }));
+  try {
+    const { rows } = await query('select ruc, razon_social from empresas order by razon_social asc');
+    return rows.map((item: any) => ({ value: item.ruc, label: `${item.ruc} - ${item.razon_social}` }));
+  } catch {
+    return [];
+  }
 }
-

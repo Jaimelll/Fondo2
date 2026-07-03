@@ -1,11 +1,10 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { createClient } from '@/utils/supabase/client'
+import { actualizarMetrica, insertarMetrica } from './actions'
 import { Navbar } from '@/components/Navbar'
 import { Footer } from '@/components/Footer'
 
 export default function EdicionPage() {
-    const supabase = createClient()
     const [projects, setProjects] = useState<any[]>([])
     const [selectedId, setSelectedId] = useState('')
     const [formData, setFormData] = useState<any>(null)
@@ -19,7 +18,7 @@ export default function EdicionPage() {
     useEffect(() => {
         if (selectedId) loadProjectDetails(selectedId)
         else setFormData(null)
-    }, [selectedId, supabase])
+    }, [selectedId])
 
     const fetchProjects = async () => {
         const data: any[] = [];
@@ -50,10 +49,10 @@ export default function EdicionPage() {
         }
 
         if (formData.metricas_id) {
-            const { error } = await supabase.from('metricas').update(metricUpdates).eq('id', formData.metricas_id)
+            const { error } = await actualizarMetrica(formData.metricas_id, metricUpdates)
             errM = error
         } else {
-            const { error } = await supabase.from('metricas').insert(metricUpdates)
+            const { error } = await insertarMetrica(metricUpdates)
             errM = error
         }
 

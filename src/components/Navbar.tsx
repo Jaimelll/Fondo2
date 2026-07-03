@@ -2,14 +2,11 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { useState } from 'react'
-import { usePathname, useRouter } from 'next/navigation'
-import { createClient } from '@/utils/supabase/client' // Use client helper
+import { usePathname } from 'next/navigation'
 import { LogOut, LayoutDashboard, Database, Edit, Menu, X } from 'lucide-react'
 
 export function Navbar() {
     const pathname = usePathname()
-    const router = useRouter()
-    const supabase = createClient()
     const [isMenuOpen, setIsMenuOpen] = useState(false)
 
     return (

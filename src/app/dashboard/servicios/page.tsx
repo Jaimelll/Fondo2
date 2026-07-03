@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from 'react';
-import { createClient } from '@/utils/supabase/client';
+import { getServiciosPageData } from './actions';
 import { ServiciosKPIs } from '@/components/servicios/ServiciosKPIs';
 import { ServiciosFilters } from '@/components/servicios/ServiciosFilters';
 import { ServiciosTimeline } from '@/components/servicios/ServiciosTimeline';
@@ -12,8 +12,6 @@ import ServicioModal from '@/components/servicios/ServicioModal';
 import { getServicioCompletoById } from '@/app/dashboard/gestion-servicios/actions';
 
 export default function ServiciosPage() {
-    const supabase = createClient();
-
     // -- Raw data -------------------------------------------------------------
     const [data, setData] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
@@ -67,32 +65,20 @@ export default function ServiciosPage() {
         async function loadInitialData() {
             setLoading(true);
 
-            const results = await Promise.all([
-                // Fetch full catalogs for robust mapping in modals/history
-                supabase.from('etapas').select('id, descripcion, fase').order('id'),
-                supabase.from('ejes').select('id, descripcion').order('id'),
-                supabase.from('lineas').select('id, descripcion').order('id'),
-                supabase.from('condicion').select('id, descripcion').order('id'),
-                supabase.from('modalidades').select('id, descripcion').order('id'),
-                supabase.from('institucion').select('id, descripcion').order('id'),
-                supabase.from('grupo').select('id, descripcion, orden').eq('tipo', 1).order('orden'),
-                supabase.from('tipo_estudio').select('id, descripcion').order('id'),
-                supabase.from('naturaleza_ie').select('id, descripcion').order('id'),
-                supabase.from('formato').select('id, descripcion').order('id'),
-                supabase.from('empresas').select('ruc, razon_social').order('razon_social')
-            ]);
+            // Catálogos + becas con relaciones, en una sola llamada al servidor
+            const pageData = await getServiciosPageData();
 
-            const etapasRaw = results[0].data || [];
-            const ejes = results[1].data || [];
-            const lineas = results[2].data || [];
-            const condiciones = results[3].data || [];
-            const modalidades = results[4].data || [];
-            const instituciones = results[5].data || [];
-            const grupos = results[6].data || [];
-            const tiposEstudio = results[7].data || [];
-            const naturalezasIE = results[8].data || [];
-            const formatos = results[9].data || [];
-            const empresas = results[10].data || [];
+            const etapasRaw = pageData.etapas || [];
+            const ejes = pageData.ejes || [];
+            const lineas = pageData.lineas || [];
+            const condiciones = pageData.condiciones || [];
+            const modalidades = pageData.modalidades || [];
+            const instituciones = pageData.instituciones || [];
+            const grupos = pageData.grupos || [];
+            const tiposEstudio = pageData.tiposEstudio || [];
+            const naturalezasIE = pageData.naturalezasIE || [];
+            const formatos = pageData.formatos || [];
+            const empresas = pageData.empresas || [];
 
             // Deduplicate (since inner join might return multiple rows per item)
             const dedup = (arr: any[] | null) => {
@@ -172,36 +158,16 @@ export default function ServiciosPage() {
                 }))
             });
 
-            // Fetch becas with all relations
-            const { data: servicios, error } = await supabase
-                .from('becas_nueva')
-                .select(`
-                    *,
-                    beneficiarios,
-                    region:region_id(id, descripcion),
-                    institucion:institucion_id(descripcion),
-                    eje:eje_id(descripcion),
-                    linea:linea_id(descripcion),
-                    etapa:etapa_id(descripcion),
-                    condicion:condicion_id(descripcion),
-                    avances:avance_beca(id, fecha, etapa_id, sustento, monto),
-                    grupo:grupo_id(descripcion, orden)
-                `)
-                .order('id', { ascending: true });
-
-            if (error) {
-                console.error('Error fetching servicios:', error);
-            } else {
-                // Pre-process dates (Unpivot logic)
-                const processed = ((servicios || []) as any[]).map((b: any) => {
-                    const inicio = b.avances?.find((a: any) => a.etapa_id === 1)?.fecha;
-                    const fin = b.avances?.find((a: any) => a.etapa_id === 10)?.fecha;
-                    const fecha_ejecucion = b.avances?.find((a: any) => a.etapa_id === 5)?.fecha;
-                    const fecha_ejecutado = b.avances?.find((a: any) => a.etapa_id === 6)?.fecha;
-                    return { ...b, fecha_inicio: inicio, fecha_fin: fin, fecha_ejecucion, fecha_ejecutado };
-                });
-                setData(processed);
-            }
+            // Becas con relaciones (ya embebidas por el server action)
+            // Pre-process dates (Unpivot logic)
+            const processed = ((pageData.servicios || []) as any[]).map((b: any) => {
+                const inicio = b.avances?.find((a: any) => a.etapa_id === 1)?.fecha;
+                const fin = b.avances?.find((a: any) => a.etapa_id === 10)?.fecha;
+                const fecha_ejecucion = b.avances?.find((a: any) => a.etapa_id === 5)?.fecha;
+                const fecha_ejecutado = b.avances?.find((a: any) => a.etapa_id === 6)?.fecha;
+                return { ...b, fecha_inicio: inicio, fecha_fin: fin, fecha_ejecucion, fecha_ejecutado };
+            });
+            setData(processed);
 
             setLoading(false);
         }

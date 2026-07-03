@@ -1,8 +1,8 @@
 "use client";
 
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { useState, useEffect, useMemo } from 'react';
-import { createClient } from '@/utils/supabase/client';
+import { useState, useEffect } from 'react';
+import { getPagosGestoras } from '@/app/dashboard/actions';
 
 interface GestoraChartProps {
     data: {
@@ -15,23 +15,15 @@ interface GestoraChartProps {
 export function GestoraChart({ data }: GestoraChartProps) {
     const [isMobile, setIsMobile] = useState(false);
     const [paymentData, setPaymentData] = useState<Record<string, { total: number; cobrado: number }>>({});
-    const supabase = useMemo(() => createClient(), []);
 
     useEffect(() => {
         const checkMobile = () => setIsMobile(window.innerWidth < 768);
         checkMobile();
         window.addEventListener('resize', checkMobile);
 
-        // Fetch payment data from public.pagos_gestoras
+        // Fetch payment data from public.pagos_gestoras (server action)
         const fetchPayments = async () => {
-            const { data: dbData, error } = await supabase
-                .from('pagos_gestoras')
-                .select('gestora, monto, mes_pago');
-
-            if (error) {
-                console.error('Error fetching pagos_gestoras:', error);
-                return;
-            }
+            const dbData = await getPagosGestoras();
 
             // Aggregate by gestora
             const aggregated: Record<string, { total: number; cobrado: number }> = {};
@@ -57,7 +49,7 @@ export function GestoraChart({ data }: GestoraChartProps) {
         fetchPayments();
 
         return () => window.removeEventListener('resize', checkMobile);
-    }, [supabase]);
+    }, []);
 
     return (
         <div className="card h-[600px] w-full">

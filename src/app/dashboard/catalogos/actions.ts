@@ -4,23 +4,16 @@
 // Server actions del módulo Catálogos.
 //
 // Acceso EXCLUSIVO del super admin (jduran). Cada acción revalida la identidad
-// del usuario vía el cliente SSR (defensa en profundidad: no confiamos solo en
-// el middleware). Las escrituras usan el cliente admin (service role) para
-// sortear RLS, igual que el resto de módulos de gestión.
+// del usuario vía la sesión (defensa en profundidad: no confiamos solo en el
+// proxy). Capa de datos: Postgres directo; la introspección de columnas se
+// hace contra information_schema (reemplaza al RPC catalogo_columnas).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { createClient } from '@supabase/supabase-js';
 import { revalidatePath } from 'next/cache';
+import { query } from '@/lib/db';
 import { getSession } from '@/lib/session';
 import { getNormalizedEmail, SUPER_ADMIN } from '@/config/permissions';
 import { esTablaValida, type Columna } from './tablas';
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-function getAdminSupabase() {
-    return createClient(supabaseUrl, supabaseServiceKey);
-}
 
 /** Lanza si el usuario actual no es el super admin. */
 async function assertSuperAdmin() {
@@ -36,62 +29,53 @@ function assertTabla(tabla: string) {
     }
 }
 
-// ─── Introspección de columnas ─────────────────────────────────────────────────
-
-function inferTypeFromValue(v: unknown): string {
-    if (typeof v === 'number') return 'numeric';
-    if (typeof v === 'boolean') return 'boolean';
-    if (typeof v === 'string') {
-        if (/^\d{4}-\d{2}-\d{2}T/.test(v)) return 'timestamp';
-        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return 'date';
+/** Valida un identificador (columna) dinámico antes de interpolarlo entre comillas. */
+function ident(name: string): string {
+    if (!/^[\p{L}_][\p{L}\p{N}_]*$/u.test(name)) {
+        throw new Error(`Identificador no válido: "${name}"`);
     }
-    return 'text';
+    return `"${name}"`;
 }
 
+// ─── Introspección de columnas ─────────────────────────────────────────────────
+
 /**
- * Descubre las columnas de una tabla. Intenta primero el RPC
- * `catalogo_columnas` (preciso: tipos reales, PK real, defaults — ver
- * scripts/catalogo_introspection.sql). Si el RPC no existe, cae a inferir desde
- * una fila de muestra asumiendo PK = "id".
+ * Descubre las columnas de una tabla vía information_schema: tipos reales,
+ * PK real, defaults (incluye columnas identity).
  */
 export async function getColumnas(tabla: string): Promise<Columna[]> {
     await assertSuperAdmin();
     assertTabla(tabla);
-    const sb = getAdminSupabase();
 
-    const { data, error } = await sb.rpc('catalogo_columnas', { p_tabla: tabla });
-    if (!error && Array.isArray(data) && data.length > 0) {
-        return data.map((c: any) => ({
-            name: c.column_name as string,
-            type: c.data_type as string,
-            isPk: Boolean(c.is_pk),
-            nullable: Boolean(c.is_nullable),
-            hasDefault: Boolean(c.has_default),
-        }));
-    }
+    const { rows } = await query(
+        `select c.column_name,
+                c.data_type,
+                (c.is_nullable = 'YES') as is_nullable,
+                (c.column_default is not null or c.is_identity = 'YES') as has_default,
+                coalesce(pk.is_pk, false) as is_pk
+           from information_schema.columns c
+           left join (
+                select kcu.column_name, true as is_pk
+                  from information_schema.table_constraints tc
+                  join information_schema.key_column_usage kcu
+                    on kcu.constraint_name = tc.constraint_name
+                   and kcu.table_schema = tc.table_schema
+                 where tc.table_schema = 'public'
+                   and tc.table_name = $1
+                   and tc.constraint_type = 'PRIMARY KEY'
+           ) pk on pk.column_name = c.column_name
+          where c.table_schema = 'public' and c.table_name = $1
+          order by c.ordinal_position`,
+        [tabla],
+    );
 
-    // Fallback: inferir desde una fila de muestra.
-    const { data: rows } = await sb.from(tabla).select('*').limit(1);
-    const sample = rows?.[0];
-    if (sample) {
-        return Object.keys(sample).map((k) => {
-            const isId = k === 'id';
-            const val = (sample as Record<string, unknown>)[k];
-            const looksUuid =
-                typeof val === 'string' &&
-                /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(val);
-            return {
-                name: k,
-                type: inferTypeFromValue(val),
-                isPk: isId,
-                nullable: true,
-                // uuid/timestamps suelen tener default; el id entero manual no.
-                hasDefault: (isId && looksUuid) || /_at$|created/.test(k),
-            };
-        });
-    }
-
-    return [];
+    return rows.map((c: any) => ({
+        name: c.column_name as string,
+        type: c.data_type as string,
+        isPk: Boolean(c.is_pk),
+        nullable: Boolean(c.is_nullable),
+        hasDefault: Boolean(c.has_default),
+    }));
 }
 
 // ─── Lectura de filas ──────────────────────────────────────────────────────────
@@ -99,21 +83,19 @@ export async function getColumnas(tabla: string): Promise<Columna[]> {
 export async function getFilas(tabla: string): Promise<Record<string, any>[]> {
     await assertSuperAdmin();
     assertTabla(tabla);
-    const sb = getAdminSupabase();
-    const { data, error } = await sb.from(tabla).select('*');
-    if (error) throw new Error(error.message);
-    return data ?? [];
+    const { rows } = await query(`select * from ${ident(tabla)}`);
+    return rows;
 }
 
 export async function getConteo(tabla: string): Promise<number> {
     await assertSuperAdmin();
     assertTabla(tabla);
-    const sb = getAdminSupabase();
-    const { count, error } = await sb
-        .from(tabla)
-        .select('*', { count: 'exact', head: true });
-    if (error) return 0;
-    return count ?? 0;
+    try {
+        const { rows } = await query(`select count(*)::int as count from ${ident(tabla)}`);
+        return rows[0]?.count ?? 0;
+    } catch {
+        return 0;
+    }
 }
 
 // ─── Coerción de valores del formulario ────────────────────────────────────────
@@ -170,9 +152,17 @@ export async function crearFila(
             delete payload[c.name];
         }
     }
-    const sb = getAdminSupabase();
-    const { error } = await sb.from(tabla).insert(payload);
-    if (error) return { ok: false, error: error.message };
+    try {
+        const cols = Object.keys(payload);
+        const values = cols.map((c) => payload[c]);
+        const placeholders = cols.map((_, i) => `$${i + 1}`);
+        await query(
+            `insert into ${ident(tabla)} (${cols.map(ident).join(', ')}) values (${placeholders.join(', ')})`,
+            values,
+        );
+    } catch (err: any) {
+        return { ok: false, error: err.message };
+    }
     revalidatePath(`/dashboard/catalogos/${tabla}`);
     revalidatePath('/dashboard/catalogos');
     return { ok: true };
@@ -189,9 +179,17 @@ export async function actualizarFila(
     const columnas = await getColumnas(tabla);
     const payload = coerce(valores, columnas);
     delete payload[pkCol]; // nunca actualizamos la PK
-    const sb = getAdminSupabase();
-    const { error } = await sb.from(tabla).update(payload).eq(pkCol, pkVal);
-    if (error) return { ok: false, error: error.message };
+    try {
+        const cols = Object.keys(payload);
+        const values = cols.map((c) => payload[c]);
+        const assignments = cols.map((c, i) => `${ident(c)} = $${i + 1}`);
+        await query(
+            `update ${ident(tabla)} set ${assignments.join(', ')} where ${ident(pkCol)} = $${cols.length + 1}`,
+            [...values, pkVal],
+        );
+    } catch (err: any) {
+        return { ok: false, error: err.message };
+    }
     revalidatePath(`/dashboard/catalogos/${tabla}`);
     return { ok: true };
 }
@@ -203,12 +201,12 @@ export async function eliminarFila(
 ): Promise<{ ok: boolean; error?: string }> {
     await assertSuperAdmin();
     assertTabla(tabla);
-    const sb = getAdminSupabase();
-    const { error } = await sb.from(tabla).delete().eq(pkCol, pkVal);
-    if (error) {
-        const msg = /foreign key|violates/i.test(error.message)
+    try {
+        await query(`delete from ${ident(tabla)} where ${ident(pkCol)} = $1`, [pkVal]);
+    } catch (err: any) {
+        const msg = /foreign key|violates/i.test(err.message)
             ? 'No se puede eliminar: el elemento está en uso por otros registros.'
-            : error.message;
+            : err.message;
         return { ok: false, error: msg };
     }
     revalidatePath(`/dashboard/catalogos/${tabla}`);
