@@ -1,5 +1,6 @@
-# Sistema Activa-T — FONDOEMPLEO
+# Fondo2 — Sistema Activa-T (FONDOEMPLEO) sin Supabase
 
+Fork de sistema-activa-t que reemplaza Supabase por infraestructura propia.
 Aplicación interna de FONDOEMPLEO para gestión y monitoreo de proyectos
 de inserción laboral, mejora de empleabilidad y aumento de ingresos.
 
@@ -7,92 +8,103 @@ de inserción laboral, mejora de empleabilidad y aumento de ingresos.
 
 - **Next.js 16** (App Router, Server Components, Server Actions)
 - **React 19**
-- **Supabase** (Postgres + Auth + Storage)
-- **Tailwind CSS 3**
-- **Recharts** para gráficos, **Leaflet** para mapa de Perú
-- **TypeScript 5**
+- **Postgres 17** autogestionado (docker-compose, cliente `pg`)
+- **Better-Auth** (email+password, cookie httpOnly, bcrypt, sin registro público)
+- **Storage local** de PDFs (`STORAGE_DOCUMENTS_PATH`)
+- **Tailwind CSS 3**, **Recharts**, **Leaflet**, **TypeScript 5**
 
-## Cómo correrlo
+## Cómo correrlo (SIEMPRE en Docker — no instalar nada en el host)
 
 ```bash
-npm install
-npm run dev   # http://localhost:3000
+cp .env.example .env       # completar BETTER_AUTH_SECRET
+docker compose up -d --build   # db (host 5434) + app dev (http://localhost:8082)
+
+# schema + auth (solo la primera vez)
+docker compose exec -T db psql -U fondo2 -d fondo2 < scripts/schema.sql
+docker compose exec -T db psql -U fondo2 -d fondo2 < scripts/auth_schema.sql
+
+# crear usuarios (no hay registro público)
+docker compose exec app node scripts/create-user.mjs <email> <password> [nombre]
 ```
 
-Requiere un archivo `.env.local` (NO trackeado) con:
+Todo comando (npm, tsc, scripts) corre con `docker compose exec app ...`.
+Tras editar server actions, `docker compose restart app` (el hot-reload no
+siempre recoge cambios en actions.ts).
 
-```
-NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
-```
+El Dockerfile de producción (deps/builder/runner, `output: 'standalone'`)
+debe compilar limpio: `docker build .`
 
 ## Estructura
 
 ```
 src/
   app/
-    auth/                       # login, signout
-    dashboard/                  # módulo principal protegido por middleware
+    auth/                       # login, signout (Better-Auth)
+    api/auth/[...all]/          # handler de Better-Auth
+    api/documentos/[archivo]/   # sirve PDFs del storage local (con sesión)
+    dashboard/                  # módulo principal protegido por src/proxy.ts
       page.tsx                  # Proyectos: KPIs + mapa + gráficos
-      actions.ts                # server actions del dashboard de proyectos
+      actions.ts                # server actions de proyectos (dashboard + gestión)
       servicios/                # módulo Servicios
-      campo/                    # módulo Supervisión (monitoreo en campo)
-      evaluacion/               # config de PDFs de bases/formato para evaluación
       gestion-proyectos/        # bandeja administrativa de proyectos
       gestion-servicios/        # bandeja administrativa de servicios
       gestion-aportantes/       # gestión de aportantes corporativos
-      gestion-monitores/        # gestión de monitores de campo
       inf-gerencial/            # informe gerencial
-      (corporativo)/documentos/ # documentos corporativos
+      catalogos/                # tablas de referencia (solo super admin)
+      (corporativo)/documentos/ # documentos corporativos (PDFs en disco)
     presentation/               # vista pública de presentación
   components/                   # componentes compartidos (charts, modals, tablas)
-  config/
-    permissions.ts              # matriz de permisos por email
-  utils/supabase/               # clientes de Supabase (client.ts, server.ts)
-  modules/
-    gestion-proyectos/campo-test/  # vista de campo (bandeja monitores)
-middleware.ts                   # gate de rutas según permissions.ts
-scripts/                        # scripts one-off de migración e importación
+  config/permissions.ts         # mapa módulo→ruta + helpers puros
+  lib/
+    db.ts                       # pool pg + query() + withAuditUser()
+    auth.ts                     # instancia Better-Auth
+    session.ts                  # getSession()/getUserEmail() (server)
+    permisos.ts                 # módulos por usuario desde usuarios_modulos
+  proxy.ts                      # gate de auth y permisos (middleware Next 16)
+scripts/
+  schema.sql                    # schema de datos (aplicar primero)
+  auth_schema.sql               # tablas Better-Auth + usuarios_modulos + seed
+  create-user.mjs               # alta/reset de usuarios
 ```
 
 ## Autorización
 
-- Acceso por correo electrónico hardcodeado en `src/config/permissions.ts`.
-- `middleware.ts` filtra rutas `/dashboard/*` según el módulo permitido.
-- Super admin: `jduran@fondoempleo.com.pe` (acceso total).
-- **Importante:** los server actions usan `SUPABASE_SERVICE_ROLE_KEY` (bypasea RLS).
-  No revalidan permisos por acción — el gate es solo el middleware. Es una deuda
-  conocida; ver TODO abajo.
+- Login email+password (Better-Auth). Usuarios se crean con `create-user.mjs`;
+  sus módulos se asignan en la tabla `usuarios_modulos` (`modulo='ALL'` = todo).
+- `src/proxy.ts` valida sesión y permisos por módulo contra Postgres en cada
+  request; `/dashboard` exacto es libre para autenticados, el resto por módulo.
+- Super admin: `jduran@fondoempleo.com.pe` (constante en permissions.ts; único
+  con acceso a Catálogos).
+- Auditoría: `withAuditUser()` (lib/db.ts) setea `app.current_user_id` por
+  transacción; el trigger de `metricas` escribe en `logs_actualizacion`.
+  (`log_proyecto_changes` existe pero no está adjunta a ninguna tabla — herencia
+  del Supabase original.)
 
 ## Convenciones
 
-- Server Actions con `"use server"` viven en `actions.ts` de cada módulo.
-- Componentes con estado de cliente usan `"use client"`.
-- Tablas Supabase en snake_case y español: `proyectos`, `instituciones_ejecutoras`,
-  `etapas`, `lineas`, `ejes`, `especialistas`, `avance_proyecto`, etc.
-- Columnas en español (incluyendo `año` con ñ — sí, funciona).
+- Server Actions con `"use server"` viven en `actions.ts` de cada módulo; el
+  cliente de datos es `query()`/`withAuditUser()` de `src/lib/db.ts` (nunca pg
+  directo en componentes).
+- Los "embeds" que antes hacía PostgREST se replican con LEFT JOIN +
+  `json_build_object`/`json_agg` lateral, conservando las formas anidadas.
+- `numeric`/`bigint` se parsean a número global en db.ts (paridad con
+  PostgREST); las fechas que las vistas esperan como string van con `::text`.
+- Tablas en snake_case y español; columnas en español (incluyendo `año` con ñ).
+- `proyectos.id` es **integer**; `metricas.id`, `aportes.id` y
+  `documentos_gerenciales.id` son uuid.
 - `dynamic = 'force-dynamic'` en páginas que dependen de filtros frescos.
 
 ## Deuda técnica conocida
 
-- [ ] Permisos hardcodeados → migrar a tabla `usuarios_modulos`.
-- [ ] Server actions no validan usuario individualmente (defensa en profundidad).
-- [ ] RLS deshabilitado (ver `scripts/disable_rls.sql`).
-- [ ] Múltiples versiones de schema (`database_schema_v{1..4}.sql`) sin sistema de
-      migraciones. Migrar a `supabase/migrations/`.
+- [ ] Registros antiguos de documentos apuntan al Storage de Supabase remoto;
+      migrar esos PDFs al storage local.
+- [ ] Al registrar el primer avance de un proyecto cuyo `avance` se cargó
+      manualmente (sin historial), el recálculo pisa el acumulado con la suma
+      del historial (comportamiento heredado del original).
 - [ ] Raíz del repo con ~100 scripts one-off (import/check/verify) — mover a
       `scripts/oneoff/` o ignorar.
-- [ ] ~200 usos de `any` en `src/`. El archivo `supabase_types.ts` existe pero
-      no está conectado a los clientes — conectarlo elimina la mayoría.
-- [ ] Catálogos del dashboard (líneas, ejes, regiones, etapas) se recargan en
-      cada navegación. Usar `unstable_cache` con revalidación bajo demanda.
+- [ ] ~200 usos de `any` en `src/`.
+- [ ] Catálogos cacheados 1h vía `unstable_cache`; falta invalidación desde
+      el módulo Catálogos.
 - [ ] Sin tests ni CI.
-
-## Módulo de Evaluación (estado actual)
-
-`/dashboard/evaluacion/configuracion` permite subir PDFs de "bases" y "formato"
-a Supabase Storage (bucket `documentos_evaluacion`). **Hoy es solo gestión de
-archivos** — no hay lógica de evaluación automática de proyectos con IA en este
-repo. La skill `fondoempleo-evaluacion` que ejecuta esa lógica vive en el
-workspace de Claude (`~/.claude/skills/`), no en este código.
+- [ ] Sin sistema de migraciones (schema.sql + auth_schema.sql aplicados a mano).
