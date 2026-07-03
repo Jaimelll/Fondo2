@@ -105,6 +105,99 @@ export async function getPresupuestoMensual() {
 }
 
 
+// Fases de "proyectos"/"grupo" que cuentan como financiamiento en curso
+// (excluye Resuelto/Pre-Impacto/Impacto/Cierre Administrativo, que son
+// grupos ya cerrados históricamente y no aportan a "en ejecución").
+const FASES_EN_EJECUCION = ['Etapa Concursal', 'Acciones Preparatorias', 'En Ejecución'];
+
+function grupoBaseProyecto(descripcion: string): string {
+    return descripcion.replace(/ - Eje.*/i, '').replace(/^Actíva-T/, 'Activa-T').trim();
+}
+
+function grupoBaseBeca(descripcion: string): string {
+    return descripcion
+        .replace(/^\d+\s*-\s*/, '')
+        .replace(/\s*-\s*(Hijos de trabajadores|Trabajadores)$/i, '')
+        .replace(/\s+(I{1,2})$/, '')
+        .replace(/^Beca\s+/i, '')
+        .trim();
+}
+
+// Beca Trabajadores (grupos 1, 2 y 3 - variantes 2024/2025/2026) se junta
+// en una sola barra 2024; MiBeca (grupo 6, con becas de varios períodos)
+// se junta en una sola barra 2021. Mismo criterio que ServiciosTimeline.
+function labelBeca(grupoId: number, descripcion: string): string {
+    if ([1, 2, 3].includes(grupoId)) return 'Beca Trabajadores 2024';
+    if (grupoId === 6) return 'MiBeca 2021';
+    return grupoBaseBeca(descripcion);
+}
+
+function sortYearFromLabel(label: string): number {
+    const match = label.match(/\d{4}/);
+    return match ? Number(match[0]) : 9999; // sin año detectable: al final
+}
+
+export async function getFinanciamientoEjecucion() {
+    let proyectosRaw: any[] = [];
+    let becasRaw: any[] = [];
+    try {
+        const [pResult, bResult] = await Promise.all([
+            query(
+                `select p.monto_fondoempleo, g.descripcion as grupo_descripcion, e.fase
+                   from proyectos p
+                   left join grupo g on g.id = p.grupo_id
+                   left join etapas e on e.id = p.etapa_id
+                  where p.grupo_id is not null`,
+            ),
+            query(
+                `select b.presupuesto, b.grupo_id, g.descripcion as grupo_descripcion
+                   from becas_nueva b
+                   left join grupo g on g.id = b.grupo_id
+                  where b.grupo_id is not null`,
+            ),
+        ]);
+        proyectosRaw = pResult.rows;
+        becasRaw = bResult.rows;
+    } catch (err) {
+        console.error('Error fetching financiamiento en ejecución:', err);
+    }
+
+    const proyectosMap = new Map<string, { monto: number; count: number }>();
+    proyectosRaw.forEach((row: any) => {
+        const fase = row.fase;
+        const descripcion = row.grupo_descripcion;
+        if (!descripcion || !FASES_EN_EJECUCION.includes(fase)) return;
+
+        const label = grupoBaseProyecto(descripcion);
+        const entry = proyectosMap.get(label) || { monto: 0, count: 0 };
+        entry.monto += Number(row.monto_fondoempleo) || 0;
+        entry.count += 1;
+        proyectosMap.set(label, entry);
+    });
+
+    const becasMap = new Map<string, { monto: number; count: number }>();
+    becasRaw.forEach((row: any) => {
+        const descripcion = row.grupo_descripcion;
+        if (!descripcion) return;
+
+        const label = labelBeca(row.grupo_id, descripcion);
+        const entry = becasMap.get(label) || { monto: 0, count: 0 };
+        entry.monto += Number(row.presupuesto) || 0;
+        entry.count += 1;
+        becasMap.set(label, entry);
+    });
+
+    const toSortedArray = (map: Map<string, { monto: number; count: number }>) =>
+        Array.from(map.entries())
+            .map(([label, v]) => ({ label, monto: v.monto, count: v.count, proyectado: /2026/.test(label) }))
+            .sort((a, b) => sortYearFromLabel(a.label) - sortYearFromLabel(b.label));
+
+    return {
+        proyectos: toSortedArray(proyectosMap),
+        becas: toSortedArray(becasMap),
+    };
+}
+
 export async function getPresupuestoComparativo() {
     let rows: any[];
     try {
