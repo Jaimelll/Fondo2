@@ -48,6 +48,8 @@ env
 *.xlsx
 *.xlsm
 *.dump
+# export de migracion de usuarios (contiene hashes de contrasenas — nunca commitear)
+usuarios_supabase.csv
 /data/
 /historial/
 /scratch/
