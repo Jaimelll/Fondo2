@@ -264,15 +264,13 @@ export async function deleteAvanceServicio(id: any, becaId: any) {
   return { success: true };
 }
 
+// Nota: estos catálogos se leen COMPLETOS (sin join con becas_nueva). Antes
+// usaban `becas_nueva!inner`, que solo listaba valores ya asignados a alguna
+// beca — un elemento recién creado en Catálogos nunca aparecía en el modal.
+
 export async function getCondiciones() {
   try {
-    // Solo condiciones usadas por alguna beca (antes: becas_nueva!inner + dedup en JS)
-    const { rows } = await query(
-      `select distinct c.id, c.descripcion
-         from condicion c
-         join becas_nueva b on b.condicion_id = c.id
-        order by c.id asc`,
-    );
+    const { rows } = await query('select id, descripcion from condicion order by id asc');
     return rows.map((item: any) => ({ value: item.id, label: item.descripcion }));
   } catch {
     return [];
@@ -281,12 +279,7 @@ export async function getCondiciones() {
 
 export async function getInstitucionesBeca() {
   try {
-    const { rows } = await query(
-      `select distinct i.id, i.descripcion
-         from institucion i
-         join becas_nueva b on b.institucion_id = i.id
-        order by i.descripcion asc`,
-    );
+    const { rows } = await query('select id, descripcion from institucion order by descripcion asc');
     return rows.map((item: any) => ({ value: item.id, label: item.descripcion }));
   } catch {
     return [];
@@ -295,13 +288,7 @@ export async function getInstitucionesBeca() {
 
 export async function getGrupos() {
   try {
-    const { rows } = await query(
-      `select distinct g.id, g.descripcion, g.orden
-         from grupo g
-         join becas_nueva b on b.grupo_id = g.id
-        where g.tipo = 1
-        order by g.orden asc`,
-    );
+    const { rows } = await query('select id, descripcion, orden from grupo where tipo = 1 order by orden asc');
     return rows.map((item: any) => ({
       value: item.id,
       label: `${item.orden} - ${item.descripcion}`
@@ -328,12 +315,7 @@ export async function getServicioCompletoById(id: number) {
 
 export async function getTiposEstudio() {
   try {
-    const { rows } = await query(
-      `select distinct t.id, t.descripcion
-         from tipo_estudio t
-         join becas_nueva b on b.tipo_estudio_id = t.id
-        order by t.id asc`,
-    );
+    const { rows } = await query('select id, descripcion from tipo_estudio order by id asc');
     return rows.map((item: any) => ({ value: item.id, label: item.descripcion }));
   } catch {
     return [];

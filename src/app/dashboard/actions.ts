@@ -480,6 +480,49 @@ export async function getTimelineData(especialistaId?: number) {
   }
 }
 
+// --- SALDOS BANCARIOS POR BANCO (editados desde Catálogos) ---
+
+const _getSaldosBancarios = unstable_cache(
+  async () => {
+    try {
+      const { rows } = await query('select * from saldo_bancario order by "año" asc, monto desc');
+      return rows as any[];
+    } catch (err) {
+      // La tabla puede no existir aún (ver scripts/migration_impacto_saldos_auditoria.sql):
+      // degradar sin romper la página.
+      console.error("FATAL ERROR getSaldosBancarios:", err);
+      return [];
+    }
+  },
+  ['catalog:saldos-bancarios'],
+  { revalidate: CATALOG_REVALIDATE_SECONDS, tags: [CATALOG_TAG] } // ediciones desde Catálogos lo invalidan
+);
+export async function getSaldosBancarios() { return _getSaldosBancarios(); }
+
+// --- INFORMES DE IMPACTO (por grupo, editados desde Catálogos) ---
+
+const _getInformesImpacto = unstable_cache(
+  async () => {
+    try {
+      // Las fechas van como string (paridad con PostgREST) — ver convención en db.ts.
+      const { rows } = await query(
+        `select id, grupo_id, linea_id, titulo,
+                fecha_inicio::text as fecha_inicio, fecha_fin::text as fecha_fin, archivo_url
+           from informe_impacto
+          order by fecha_inicio asc`,
+      );
+      return rows as any[];
+    } catch (err) {
+      // La tabla puede no existir aún: degradar sin romper el dashboard.
+      console.error("FATAL ERROR getInformesImpacto:", err);
+      return [];
+    }
+  },
+  ['catalog:informes-impacto'],
+  { revalidate: CATALOG_REVALIDATE_SECONDS, tags: [CATALOG_TAG] } // ediciones desde Catálogos lo invalidan
+);
+export async function getInformesImpacto() { return _getInformesImpacto(); }
+
 // --- PAGOS GESTORAS (para GestoraChart) ---
 
 export async function getPagosGestoras() {
@@ -500,16 +543,6 @@ export async function getFinanzasAnual() {
     return rows as any[];
   } catch (err) {
     console.error("FATAL ERROR getFinanzasAnual:", err);
-    return [];
-  }
-}
-
-export async function getAportantesAnual() {
-  try {
-    const { rows } = await query('select * from aportantes_anual order by "año" asc, monto desc');
-    return rows;
-  } catch (err) {
-    console.error("FATAL ERROR getAportantesAnual:", err);
     return [];
   }
 }
@@ -535,26 +568,44 @@ async function getAuditUserId(): Promise<string | null> {
 
 export async function createProyecto(formData: any) {
   const userId = await getAuditUserId();
-  const cols = Object.keys(formData);
-  const values = cols.map((c) => formData[c]);
+  // proyectos.id no tiene default/secuencia en la BD: se asigna max(id)+1
+  // (se ignora cualquier id que venga en el formulario).
+  const { id: _idFormulario, ...datos } = formData ?? {};
+  const cols = Object.keys(datos);
+  const values = cols.map((c) => datos[c]);
   const placeholders = cols.map((_, i) => `$${i + 1}`);
 
-  try {
-    const rows = await withAuditUser(userId, async (client) => {
-      const result = await client.query(
-        `insert into proyectos (${cols.map(colName).join(', ')}) values (${placeholders.join(', ')}) returning *`,
-        values,
-      );
-      return result.rows;
-    });
-
-    revalidatePath('/dashboard/gestion-proyectos');
-    revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
-    return rows;
-  } catch (error: any) {
-    console.error("Error creating proyecto:", error);
-    throw new Error(error.message);
+  // Si dos altas simultáneas chocan (23505), se reintenta con el nuevo máximo.
+  let rows: any[] = [];
+  let lastError: any = null;
+  for (let intento = 0; intento < 3; intento++) {
+    try {
+      rows = await withAuditUser(userId, async (client) => {
+        const maxResult = await client.query('select coalesce(max(id), 0) + 1 as next_id from proyectos');
+        const nextId = Number(maxResult.rows[0].next_id);
+        const result = await client.query(
+          `insert into proyectos (id${cols.length ? ', ' + cols.map(colName).join(', ') : ''})
+           values ($${cols.length + 1}${cols.length ? ', ' + placeholders.join(', ') : ''}) returning *`,
+          [...values, nextId],
+        );
+        return result.rows;
+      });
+      lastError = null;
+      break;
+    } catch (error: any) {
+      lastError = error;
+      if (error?.code !== '23505') break; // solo reintentar por id duplicado
+    }
   }
+
+  if (lastError) {
+    console.error("Error creating proyecto:", lastError);
+    throw new Error(lastError.message);
+  }
+
+  revalidatePath('/dashboard/gestion-proyectos');
+  revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
+  return rows;
 }
 
 export async function updateProyecto(id: any, formData: any) {

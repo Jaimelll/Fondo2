@@ -52,6 +52,16 @@ export function tieneAccesoModulo(modulos: Modulos, modulo: string): boolean {
     return modulos.some((m) => m.trim().toLowerCase() === modulo.trim().toLowerCase());
 }
 
+/** Puede VER el módulo Catálogos (super admin o usuarios con el módulo asignado). */
+export function puedeVerCatalogos(email: string | null | undefined, modulos: Modulos): boolean {
+    return getNormalizedEmail(email) === SUPER_ADMIN || tieneAccesoModulo(modulos, 'Catálogos');
+}
+
+/** Puede EDITAR (crear/actualizar/eliminar) en Catálogos: solo el super admin. */
+export function puedeEditarCatalogos(email: string | null | undefined): boolean {
+    return getNormalizedEmail(email) === SUPER_ADMIN;
+}
+
 /** Devuelve true si la ruta pathname está permitida para esos módulos */
 export function isRutaPermitida(modulos: Modulos, pathname: string): boolean {
     if (modulos === 'ALL') return true;

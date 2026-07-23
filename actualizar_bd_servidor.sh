@@ -9,13 +9,15 @@ DUMP="${1:?Uso: $0 <archivo.dump>}"
 FECHA=$(date +%F_%H%M)
 
 TABLAS=(
-  aportantes_anual aportes avance_beca avance_proyecto avances
-  becas_nueva condicion documentos_gerenciales ejes empresas
-  especialistas etapas finanzas_anual formato grupo institucion
+  aportantes_anual aportes auditoria_eeff_historico avance_beca
+  avance_proyecto avances becas_nueva condicion
+  documentos_gerenciales ejes empresas especialistas etapas
+  finanzas_anual formato grupo informe_impacto institucion
   instituciones instituciones_ejecutoras lineas logs_actualizacion
   metricas modalidades naturaleza_ie pagos_gestoras
   presupuesto_anual_comparativo presupuesto_mensual programa_proyecto
-  proyectos regiones sectores_ciiu tipo_estudio unidades_operativas
+  proyectos regiones saldo_bancario sectores_ciiu tipo_estudio
+  unidades_operativas
 )
 
 echo "1/5 Backup local de seguridad..."

@@ -10,6 +10,7 @@ import { ServiciosInstitucionChart } from '@/components/servicios/ServiciosInsti
 import { ServiciosDemografiaCharts } from '@/components/servicios/ServiciosDemografiaCharts';
 import ServicioModal from '@/components/servicios/ServicioModal';
 import { getServicioCompletoById } from '@/app/dashboard/gestion-servicios/actions';
+import { getInformesImpacto } from '@/app/dashboard/actions';
 
 export default function ServiciosPage() {
     // -- Raw data -------------------------------------------------------------
@@ -45,6 +46,9 @@ export default function ServiciosPage() {
     // -- Timeline options (for ServiciosTimeline) ------------------------------
     const [timelineOptions, setTimelineOptions] = useState<any>({});
 
+    // -- Informes de impacto (definen la etapa Impacto en la línea de tiempo) --
+    const [informesImpacto, setInformesImpacto] = useState<any[]>([]);
+
     // -- Active filter state (single-select, matches Proyectos pattern) ---------
     const [selectedFase, setSelectedFase] = useState<string>('all');       // Default: Todas las Fases
     const [selectedEtapa, setSelectedEtapa] = useState<string>('all');
@@ -67,6 +71,13 @@ export default function ServiciosPage() {
 
             // Catálogos + becas con relaciones, en una sola llamada al servidor
             const pageData = await getServiciosPageData();
+
+            // Informes de impacto (tabla compartida con Proyectos, editada en
+            // Catálogos). Se traen todos; la línea de tiempo se queda solo con
+            // los grupos de becas que dibuja.
+            getInformesImpacto()
+                .then(setInformesImpacto)
+                .catch(err => console.error('Error fetching informes de impacto:', err));
 
             const etapasRaw = pageData.etapas || [];
             const ejes = pageData.ejes || [];
@@ -425,6 +436,7 @@ export default function ServiciosPage() {
                 <ServiciosTimeline
                     data={filteredData}
                     options={timelineOptions}
+                    informesImpacto={informesImpacto}
                 />
             </div>
 

@@ -73,9 +73,10 @@ CREATE TABLE IF NOT EXISTS usuarios_modulos (
 
 -- Seed: matriz vigente al momento de la migración (sin los módulos eliminados
 -- Supervisión, Gestión de Monitores y Evaluación).
+-- 'Inf. Gerencial' es restringido: solo rcarbajal, pricra y el super admin.
+-- 'Catálogos': edita solo el super admin; rcarbajal y erizabal lo VEN (solo lectura).
 INSERT INTO usuarios_modulos (email, modulo) VALUES
     ('jduran@fondoempleo.com.pe',    'ALL'),
-    ('invitado@fondoempleo.com.pe',  'Inf. Gerencial'),
     ('invitado@fondoempleo.com.pe',  'Proyectos'),
     ('invitado@fondoempleo.com.pe',  'Servicios'),
     ('rcarbajal@fondoempleo.com.pe', 'Inf. Gerencial'),
@@ -85,27 +86,29 @@ INSERT INTO usuarios_modulos (email, modulo) VALUES
     ('rcarbajal@fondoempleo.com.pe', 'Gestión de Proyectos'),
     ('rcarbajal@fondoempleo.com.pe', 'Gestión de Servicios'),
     ('rcarbajal@fondoempleo.com.pe', 'Gestión de Aportantes'),
+    ('rcarbajal@fondoempleo.com.pe', 'Catálogos'),
     ('pricra@fondoempleo.com.pe',    'Inf. Gerencial'),
     ('pricra@fondoempleo.com.pe',    'Proyectos'),
     ('pricra@fondoempleo.com.pe',    'Servicios'),
     ('pricra@fondoempleo.com.pe',    'Gestión de Aportantes'),
-    ('herique@fondoempleo.com.pe',   'Inf. Gerencial'),
     ('herique@fondoempleo.com.pe',   'Proyectos'),
     ('herique@fondoempleo.com.pe',   'Servicios'),
-    ('arojas@fondoempleo.com.pe',    'Inf. Gerencial'),
     ('arojas@fondoempleo.com.pe',    'Proyectos'),
     ('arojas@fondoempleo.com.pe',    'Servicios'),
     ('arojas@fondoempleo.com.pe',    'Gestión de Proyectos'),
     ('arojas@fondoempleo.com.pe',    'Gestión de Servicios'),
-    ('erizabal@fondoempleo.com.pe',  'Inf. Gerencial'),
     ('erizabal@fondoempleo.com.pe',  'Proyectos'),
     ('erizabal@fondoempleo.com.pe',  'Servicios'),
     ('erizabal@fondoempleo.com.pe',  'Gestión de Proyectos'),
     ('erizabal@fondoempleo.com.pe',  'Gestión de Servicios'),
+    ('erizabal@fondoempleo.com.pe',  'Catálogos'),
     ('jleclere@fondoempleo.com.pe',  'Proyectos'),
     ('jbozzo@fondoempleo.com.pe',    'Proyectos'),
     ('emoya@fondoempleo.com.pe',     'Servicios'),
     ('emoya@fondoempleo.com.pe',     'Gestión de Servicios'),
     ('hmeza@fondoempleo.com.pe',     'Proyectos'),
-    ('hmeza@fondoempleo.com.pe',     'Servicios')
+    ('hmeza@fondoempleo.com.pe',     'Servicios'),
+    ('pconcha@fondoempleo.com.pe',   'Proyectos'),
+    ('pconcha@fondoempleo.com.pe',   'Servicios'),
+    ('pconcha@fondoempleo.com.pe',   'Documentos')
 ON CONFLICT (email, modulo) DO NOTHING;

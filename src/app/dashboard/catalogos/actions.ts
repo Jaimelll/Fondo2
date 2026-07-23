@@ -3,23 +3,51 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Server actions del módulo Catálogos.
 //
-// Acceso EXCLUSIVO del super admin (jduran). Cada acción revalida la identidad
-// del usuario vía la sesión (defensa en profundidad: no confiamos solo en el
-// proxy). Capa de datos: Postgres directo; la introspección de columnas se
-// hace contra information_schema (reemplaza al RPC catalogo_columnas).
+// Lectura: super admin + usuarios con el módulo 'Catálogos' (solo lectura).
+// Escritura: EXCLUSIVA del super admin (jduran). Cada acción revalida la
+// identidad del usuario vía la sesión (defensa en profundidad: no confiamos
+// solo en el proxy). Capa de datos: Postgres directo; la introspección de
+// columnas se hace contra information_schema (reemplaza al RPC
+// catalogo_columnas). Los PDFs (columnas archivo_url) van al storage local
+// (STORAGE_DOCUMENTS_PATH), no a un bucket de Supabase.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { revalidatePath } from 'next/cache';
+import { promises as fs } from 'fs';
+import path from 'path';
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { query } from '@/lib/db';
 import { getSession } from '@/lib/session';
-import { getNormalizedEmail, SUPER_ADMIN } from '@/config/permissions';
-import { esTablaValida, type Columna } from './tablas';
+import { getModulosUsuario } from '@/lib/permisos';
+import { getNormalizedEmail, SUPER_ADMIN, puedeVerCatalogos } from '@/config/permissions';
+import { esTablaValida, COLUMNAS_COMBO, type Columna } from './tablas';
 
-/** Lanza si el usuario actual no es el super admin. */
+// Tag de los catálogos cacheados con unstable_cache en src/app/dashboard/actions.ts
+// (líneas, ejes, etapas, regiones, especialistas, etc. — TTL 1 hora). Toda
+// escritura desde este módulo DEBE invalidarlo, o el resto de la app seguirá
+// sirviendo la lista vieja hasta por una hora.
+const CATALOG_TAG = 'catalogos';
+
+function invalidarCatalogos(tabla: string) {
+    revalidateTag(CATALOG_TAG, 'max'); // Next 16 exige el 2º arg; 'max' = invalidación total
+    revalidatePath(`/dashboard/catalogos/${tabla}`);
+    revalidatePath('/dashboard/catalogos');
+}
+
+/** Lanza si el usuario actual no es el super admin (guarda de ESCRITURA). */
 async function assertSuperAdmin() {
     const session = await getSession();
     if (getNormalizedEmail(session?.user.email) !== SUPER_ADMIN) {
-        throw new Error('No autorizado: este módulo es solo para el super admin.');
+        throw new Error('No autorizado: solo el super admin puede modificar catálogos.');
+    }
+}
+
+/** Lanza si el usuario no puede VER catálogos (super admin o módulo asignado). */
+async function assertPuedeVer() {
+    const session = await getSession();
+    const email = session?.user.email;
+    const modulos = await getModulosUsuario(email);
+    if (!puedeVerCatalogos(email, modulos)) {
+        throw new Error('No autorizado para ver los catálogos.');
     }
 }
 
@@ -44,7 +72,7 @@ function ident(name: string): string {
  * PK real, defaults (incluye columnas identity).
  */
 export async function getColumnas(tabla: string): Promise<Columna[]> {
-    await assertSuperAdmin();
+    await assertPuedeVer();
     assertTabla(tabla);
 
     const { rows } = await query(
@@ -80,15 +108,28 @@ export async function getColumnas(tabla: string): Promise<Columna[]> {
 
 // ─── Lectura de filas ──────────────────────────────────────────────────────────
 
+/** 'YYYY-MM-DD' local (paridad con PostgREST para columnas date). */
+function formatFecha(d: Date): string {
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export async function getFilas(tabla: string): Promise<Record<string, any>[]> {
-    await assertSuperAdmin();
+    await assertPuedeVer();
     assertTabla(tabla);
     const { rows } = await query(`select * from ${ident(tabla)}`);
-    return rows;
+    // pg devuelve date/timestamp como Date; el editor espera strings.
+    return rows.map((r) => {
+        const out: Record<string, any> = {};
+        for (const [k, v] of Object.entries(r)) {
+            out[k] = v instanceof Date ? formatFecha(v) : v;
+        }
+        return out;
+    });
 }
 
 export async function getConteo(tabla: string): Promise<number> {
-    await assertSuperAdmin();
+    await assertPuedeVer();
     assertTabla(tabla);
     try {
         const { rows } = await query(`select count(*)::int as count from ${ident(tabla)}`);
@@ -96,6 +137,68 @@ export async function getConteo(tabla: string): Promise<number> {
     } catch {
         return 0;
     }
+}
+
+// ─── Opciones para columnas combo (FK) ─────────────────────────────────────────
+
+export type OpcionesCombo = Record<string, { libre: boolean; opciones: { value: any; label: string }[] }>;
+
+/**
+ * Devuelve las opciones de cada columna combo de la tabla (config en
+ * COLUMNAS_COMBO): estáticas (p. ej. meses) o leídas de un catálogo. El
+ * editor las muestra como <select>, o como input con sugerencias si `libre`.
+ */
+export async function getOpcionesCombo(tabla: string): Promise<OpcionesCombo> {
+    await assertPuedeVer();
+    assertTabla(tabla);
+    const config = COLUMNAS_COMBO[tabla];
+    if (!config) return {};
+    const out: OpcionesCombo = {};
+    for (const [col, ref] of Object.entries(config)) {
+        if (ref.estatico) {
+            out[col] = { libre: Boolean(ref.libre), opciones: ref.estatico };
+            continue;
+        }
+        if (!ref.tabla || !ref.valor || !ref.etiqueta) continue;
+        const cols = [ref.valor, ref.etiqueta, ...(ref.etiquetaExtra ? [ref.etiquetaExtra] : [])];
+        let data: any[] = [];
+        try {
+            let sql = `select ${[...new Set(cols)].map(ident).join(', ')} from ${ident(ref.tabla)}`;
+            const params: unknown[] = [];
+            if (ref.filtro) {
+                sql += ` where ${ident(String(ref.filtro[0]))} = $1`;
+                params.push(ref.filtro[1]);
+            }
+            sql += ` order by ${ident(ref.etiqueta)} asc`;
+            const result = await query(sql, params);
+            data = result.rows;
+        } catch (err: any) {
+            console.error(`Error cargando opciones de ${tabla}.${col}:`, err.message);
+            out[col] = { libre: Boolean(ref.libre), opciones: [] };
+            continue;
+        }
+        const opciones = data.map((r: any) => {
+            const principal = String(r[ref.etiqueta!] ?? r[ref.valor!]).trim();
+            const extra = ref.etiquetaExtra ? String(r[ref.etiquetaExtra] ?? '').trim() : '';
+            return {
+                value: r[ref.valor!],
+                label: extra && extra !== principal ? `${principal} — ${extra}` : principal,
+            };
+        });
+        // Dedupe: necesario cuando las opciones salen de una columna con valores
+        // repetidos (p. ej. banco de saldo_bancario).
+        const vistos = new Set<string>();
+        out[col] = {
+            libre: Boolean(ref.libre),
+            opciones: opciones.filter((o) => {
+                const k = String(o.value);
+                if (vistos.has(k)) return false;
+                vistos.add(k);
+                return true;
+            }),
+        };
+    }
+    return out;
 }
 
 // ─── Coerción de valores del formulario ────────────────────────────────────────
@@ -151,6 +254,11 @@ export async function crearFila(
         if (c.hasDefault && (payload[c.name] === null || payload[c.name] === undefined)) {
             delete payload[c.name];
         }
+        // PK vacía: dejar que la genere la BD (columnas identity reportan
+        // has_default=false en information_schema, p.ej. informe_impacto.id).
+        if (c.isPk && (payload[c.name] === null || payload[c.name] === undefined)) {
+            delete payload[c.name];
+        }
     }
     try {
         const cols = Object.keys(payload);
@@ -163,9 +271,47 @@ export async function crearFila(
     } catch (err: any) {
         return { ok: false, error: err.message };
     }
-    revalidatePath(`/dashboard/catalogos/${tabla}`);
-    revalidatePath('/dashboard/catalogos');
+    invalidarCatalogos(tabla);
     return { ok: true };
+}
+
+// ─── Storage local de PDFs (columnas archivo_url) ──────────────────────────────
+
+// Mismo directorio y ruta protegida que el módulo Documentos Corporativos:
+// los archivos viven en STORAGE_DOCUMENTS_PATH y se sirven vía
+// GET /api/documentos/[archivo] (el proxy de auth exige sesión).
+const STORAGE_DIR = path.resolve(
+    process.cwd(),
+    process.env.STORAGE_DOCUMENTS_PATH || './storage/documentos',
+);
+const URL_ARCHIVOS_PREFIX = '/api/documentos/';
+
+/** Nombre de archivo local si la URL apunta a nuestro storage; null si es externa. */
+function extraerNombreLocal(url: string | null | undefined): string | null {
+    if (!url || !url.startsWith(URL_ARCHIVOS_PREFIX)) return null;
+    const nombre = path.basename(decodeURIComponent(url.slice(URL_ARCHIVOS_PREFIX.length)));
+    return nombre || null;
+}
+
+/**
+ * Borra del disco el PDF de `url` SOLO si ninguna fila de la tabla lo sigue
+ * usando (un mismo informe puede estar vinculado a varios grupos = varias
+ * filas con la misma URL). Silencioso ante errores: el borrado de la fila ya
+ * ocurrió y no debe revertirse por un problema de limpieza.
+ */
+async function limpiarArchivoSiHuerfano(tabla: string, url: string | null | undefined) {
+    const nombre = extraerNombreLocal(url);
+    if (!nombre) return; // URL externa (p. ej. Storage de Supabase antiguo): no tocar
+    try {
+        const { rows } = await query(
+            `select count(*)::int as count from ${ident(tabla)} where archivo_url = $1`,
+            [url],
+        );
+        if ((rows[0]?.count ?? 0) > 0) return; // otra fila aún lo usa
+        await fs.unlink(path.join(STORAGE_DIR, nombre));
+    } catch (e: any) {
+        console.warn('Limpieza de archivo huérfano falló:', e.message);
+    }
 }
 
 export async function actualizarFila(
@@ -179,7 +325,18 @@ export async function actualizarFila(
     const columnas = await getColumnas(tabla);
     const payload = coerce(valores, columnas);
     delete payload[pkCol]; // nunca actualizamos la PK
+
     try {
+        // Si se reemplaza archivo_url, recordar el anterior para limpiar el huérfano.
+        let urlAnterior: string | null = null;
+        if ('archivo_url' in payload) {
+            const { rows } = await query(
+                `select archivo_url from ${ident(tabla)} where ${ident(pkCol)} = $1`,
+                [pkVal],
+            );
+            urlAnterior = rows[0]?.archivo_url ?? null;
+        }
+
         const cols = Object.keys(payload);
         const values = cols.map((c) => payload[c]);
         const assignments = cols.map((c, i) => `${ident(c)} = $${i + 1}`);
@@ -187,11 +344,50 @@ export async function actualizarFila(
             `update ${ident(tabla)} set ${assignments.join(', ')} where ${ident(pkCol)} = $${cols.length + 1}`,
             [...values, pkVal],
         );
+
+        if (urlAnterior && urlAnterior !== payload['archivo_url']) {
+            await limpiarArchivoSiHuerfano(tabla, urlAnterior);
+        }
     } catch (err: any) {
         return { ok: false, error: err.message };
     }
-    revalidatePath(`/dashboard/catalogos/${tabla}`);
+    invalidarCatalogos(tabla);
     return { ok: true };
+}
+
+function sanitizeFileName(fileName: string): string {
+    return fileName
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .toLowerCase();
+}
+
+/**
+ * Guarda un PDF en el storage local y devuelve su URL servida por
+ * /api/documentos. Lo usa el editor de catálogos para llenar columnas
+ * `archivo_url`.
+ */
+export async function subirArchivoCatalogo(
+    formData: FormData,
+): Promise<{ ok: boolean; url?: string; error?: string }> {
+    await assertSuperAdmin();
+    const file = formData.get('archivo') as File | null;
+    if (!file || file.size === 0) {
+        return { ok: false, error: 'Debe seleccionar un archivo PDF.' };
+    }
+    if (file.size > 20 * 1024 * 1024) {
+        return { ok: false, error: 'El archivo excede el límite de 20 MB.' };
+    }
+    try {
+        const fileName = `${Date.now()}_${sanitizeFileName(file.name)}`;
+        await fs.mkdir(STORAGE_DIR, { recursive: true });
+        const buffer = Buffer.from(await file.arrayBuffer());
+        await fs.writeFile(path.join(STORAGE_DIR, fileName), buffer);
+        return { ok: true, url: `${URL_ARCHIVOS_PREFIX}${encodeURIComponent(fileName)}` };
+    } catch (err: any) {
+        return { ok: false, error: err.message };
+    }
 }
 
 export async function eliminarFila(
@@ -201,6 +397,18 @@ export async function eliminarFila(
 ): Promise<{ ok: boolean; error?: string }> {
     await assertSuperAdmin();
     assertTabla(tabla);
+
+    // Capturar el archivo_url antes de borrar (si la tabla tiene esa columna)
+    // para eliminar también el PDF local cuando quede huérfano.
+    let urlArchivo: string | null = null;
+    try {
+        const { rows } = await query(
+            `select archivo_url from ${ident(tabla)} where ${ident(pkCol)} = $1`,
+            [pkVal],
+        );
+        urlArchivo = rows[0]?.archivo_url ?? null;
+    } catch { /* la tabla no tiene archivo_url: nada que limpiar */ }
+
     try {
         await query(`delete from ${ident(tabla)} where ${ident(pkCol)} = $1`, [pkVal]);
     } catch (err: any) {
@@ -209,7 +417,9 @@ export async function eliminarFila(
             : err.message;
         return { ok: false, error: msg };
     }
-    revalidatePath(`/dashboard/catalogos/${tabla}`);
-    revalidatePath('/dashboard/catalogos');
+
+    if (urlArchivo) await limpiarArchivoSiHuerfano(tabla, urlArchivo);
+
+    invalidarCatalogos(tabla);
     return { ok: true };
 }

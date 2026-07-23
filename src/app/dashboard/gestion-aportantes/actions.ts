@@ -133,7 +133,8 @@ export async function deleteAporte(id: string) {
 
 export async function getFinancialSummary() {
     noStore();
-    const rubros = ['Intereses', 'G. Operativos', 'Proyectos', 'Becas', 'Saldos en Bancos'];
+    // "Saldos en Bancos" se gestiona ahora por banco en Catálogos (saldo_bancario).
+    const rubros = ['Intereses', 'G. Operativos', 'Proyectos', 'Becas'];
 
     let rows: any[];
     try {

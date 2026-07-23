@@ -3,7 +3,8 @@ import { redirect } from 'next/navigation';
 import { unstable_noStore as noStore } from 'next/cache';
 import { Database } from 'lucide-react';
 import { getSession } from '@/lib/session';
-import { getNormalizedEmail, SUPER_ADMIN } from '@/config/permissions';
+import { getModulosUsuario } from '@/lib/permisos';
+import { puedeVerCatalogos, puedeEditarCatalogos } from '@/config/permissions';
 import { TABLAS, etiquetaTabla } from './tablas';
 import { getConteo } from './actions';
 
@@ -13,11 +14,14 @@ export const revalidate = 0;
 export default async function CatalogosPage() {
     noStore();
 
-    // Guarda de página: solo el super admin (defensa en profundidad).
+    // Guarda de página: super admin (edición) o módulo Catálogos (solo lectura).
     const session = await getSession();
-    if (getNormalizedEmail(session?.user.email) !== SUPER_ADMIN) {
+    const email = session?.user.email;
+    const modulos = await getModulosUsuario(email);
+    if (!puedeVerCatalogos(email, modulos)) {
         redirect('/dashboard');
     }
+    const soloLectura = !puedeEditarCatalogos(email);
 
     const conteos = await Promise.all(
         TABLAS.map(async (t) => ({ tabla: t, count: await getConteo(t) })),
@@ -30,10 +34,18 @@ export default async function CatalogosPage() {
                     <Database className="h-6 w-6" />
                 </div>
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-800">Catálogos</h1>
+                    <h1 className="text-2xl font-bold text-gray-800">
+                        Catálogos
+                        {soloLectura && (
+                            <span className="ml-3 align-middle rounded-full bg-amber-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-amber-700">
+                                Solo lectura
+                            </span>
+                        )}
+                    </h1>
                     <p className="text-sm text-gray-500">
-                        Tablas de referencia del sistema. Haz clic en una para ver,
-                        agregar, editar o eliminar sus elementos.
+                        {soloLectura
+                            ? 'Tablas de referencia del sistema. Haz clic en una para consultar sus elementos.'
+                            : 'Tablas de referencia del sistema. Haz clic en una para ver, agregar, editar o eliminar sus elementos.'}
                     </p>
                 </div>
             </div>
