@@ -38,6 +38,37 @@ echo 'bucket,ruta,bytes,sha256' > "$INV"
 
 total=0; fallos=0
 
+# Lee por stdin la respuesta del listado y emite "F|nombre" (archivo) o
+# "D|nombre" (carpeta: en Supabase se distinguen porque no traen id).
+# El host del servidor no tiene node ni jq, así que probamos varios intérpretes
+# y caemos a un contenedor si no hay ninguno.
+json_entradas() {
+    # Ojo: se comprueba que el intérprete FUNCIONE, no que exista. En Windows
+    # "python3" es un alias de la Store que existe en el PATH y no ejecuta nada.
+    if jq --version >/dev/null 2>&1; then
+        jq -r '.[] | select(.name != ".emptyFolderPlaceholder") | (if .id then "F|" else "D|" end) + .name'
+    elif python3 -c 'import json' >/dev/null 2>&1; then
+        python3 -c 'import sys, json
+try:
+    datos = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for o in datos:
+    n = o.get("name", "")
+    if n and n != ".emptyFolderPlaceholder":
+        print(("F|" if o.get("id") else "D|") + n)'
+    else
+        docker run --rm -i node:20-alpine node -e "
+            let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{
+                let j=[];try{j=JSON.parse(d)}catch(e){process.exit(0)}
+                for (const o of j) {
+                    if (!o.name || o.name === '.emptyFolderPlaceholder') continue;
+                    console.log((o.id ? 'F|' : 'D|') + o.name);
+                }
+            })"
+    fi
+}
+
 # Lista un bucket (recursivo: evidencias_supervision guarda subcarpetas por uuid).
 listar() {
     local bucket="$1" prefijo="$2"
@@ -45,15 +76,7 @@ listar() {
         -H "apikey: $SB_KEY" -H "Authorization: Bearer $SB_KEY" \
         -H 'Content-Type: application/json' \
         -d "{\"prefix\":\"$prefijo\",\"limit\":1000,\"sortBy\":{\"column\":\"name\",\"order\":\"asc\"}}" |
-        node -e "
-            let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{
-                let j=[];try{j=JSON.parse(d)}catch(e){process.exit(0)}
-                for (const o of j) {
-                    if (o.name === '.emptyFolderPlaceholder') continue;
-                    // sin id = carpeta
-                    console.log((o.id ? 'F|' : 'D|') + '$prefijo' + o.name);
-                }
-            })"
+        json_entradas | sed "s#^\([FD]\)|#\1|$prefijo#"
 }
 
 descargar_bucket() {
