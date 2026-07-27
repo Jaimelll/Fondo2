@@ -514,6 +514,26 @@ export async function getAportantesAnual() {
   }
 }
 
+// --- SALDOS BANCARIOS (por banco, editados desde Catálogos) ---
+
+const _getSaldosBancarios = unstable_cache(
+  async () => {
+    try {
+      const { rows } = await query(
+        'select * from saldo_bancario order by "año" asc, monto desc',
+      );
+      return rows as any[];
+    } catch (err: any) {
+      // La tabla puede no existir aún: degradar sin romper la página.
+      console.error("Error fetching saldos bancarios:", err.message);
+      return [];
+    }
+  },
+  ['catalog:saldos-bancarios'],
+  { revalidate: CATALOG_REVALIDATE_SECONDS, tags: [CATALOG_TAG] } // ediciones desde Catálogos lo invalidan
+);
+export async function getSaldosBancarios() { return _getSaldosBancarios(); }
+
 // --- PROYECTOS CRUD ACTIONS ---
 
 /** Valida un nombre de columna dinámico (permite ñ/acentos, rechaza comillas). */
