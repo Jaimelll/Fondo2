@@ -1,12 +1,16 @@
+$ErrorActionPreference = "Stop"
+Set-Location $PSScriptRoot
+. "$PSScriptRoot\scripts\supabase_env.ps1"   # credenciales desde .env, no en el repo
+
 $FECHA = Get-Date -Format "yyyy-MM-dd_HHmm"
 $NOMBRE_ARCHIVO = "backup_activa_t_$FECHA.dump"
 
 Write-Host "🚀 Iniciando respaldo de Supabase..." -ForegroundColor Cyan
 
 # Ejecuta el backup usando volúmenes de Docker para evitar corrupción de PowerShell
-docker run --rm -v "${PWD}:/data" -e PGPASSWORD='DbBackupActiva2026' postgres:17-alpine `
-  pg_dump -h aws-1-us-east-1.pooler.supabase.com -p 6543 `
-  -U postgres.zhtujzuuwecnqdecazam -d postgres -F c -f /data/$NOMBRE_ARCHIVO
+docker run --rm -v "${PWD}:/data" -e PGPASSWORD=$SB_PASSWORD postgres:17-alpine `
+  pg_dump -h $SB_HOST -p $SB_PORT `
+  -U $SB_USER -d postgres -F c -f /data/$NOMBRE_ARCHIVO
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "✅ ¡Éxito! Backup guardado como: $NOMBRE_ARCHIVO" -ForegroundColor Green

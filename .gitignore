@@ -76,3 +76,6 @@ schema_final.txt
 .gstack/
 /storage/
 inventario_pdfs_*.csv
+/backups/
+respaldo_supabase_*/
+prueba_archivo/

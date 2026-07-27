@@ -3,11 +3,12 @@
 # Uso:  .\migrar_usuarios.ps1
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
+. "$PSScriptRoot\scripts\supabase_env.ps1"   # credenciales desde .env, no en el repo
 
 Write-Host "1/2 Exportando usuarios de Supabase..." -ForegroundColor Cyan
-docker run --rm -v "${PWD}:/data" -e PGPASSWORD='DbBackupActiva2026' postgres:17-alpine `
-  psql -h aws-1-us-east-1.pooler.supabase.com -p 6543 `
-  -U postgres.zhtujzuuwecnqdecazam -d postgres `
+docker run --rm -v "${PWD}:/data" -e PGPASSWORD=$SB_PASSWORD postgres:17-alpine `
+  psql -h $SB_HOST -p $SB_PORT `
+  -U $SB_USER -d postgres `
   -v ON_ERROR_STOP=1 -f /data/scripts/exportar_usuarios_supabase.sql
 if ($LASTEXITCODE -ne 0) { throw "Fallo la exportacion desde Supabase" }
 

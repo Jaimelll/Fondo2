@@ -33,9 +33,10 @@ if ($up -notcontains "db") { throw "El servicio 'db' de fondo2 no esta corriendo
 if (-not $Dump) {
     $Dump = "supabase_$FECHA.dump"
     Write-Host "1/7 Descargando dump de Supabase -> $Dump" -ForegroundColor Cyan
-    docker run --rm -v "${PWD}:/data" -e PGPASSWORD='DbBackupActiva2026' postgres:17-alpine `
-      pg_dump -h aws-1-us-east-1.pooler.supabase.com -p 6543 `
-      -U postgres.zhtujzuuwecnqdecazam -d postgres -F c -f /data/$Dump
+    . "$PSScriptRoot\scripts\supabase_env.ps1"   # credenciales desde .env, no en el repo
+    docker run --rm -v "${PWD}:/data" -e PGPASSWORD=$SB_PASSWORD postgres:17-alpine `
+      pg_dump -h $SB_HOST -p $SB_PORT `
+      -U $SB_USER -d postgres -F c -f /data/$Dump
     if ($LASTEXITCODE -ne 0) { throw "Fallo el pg_dump de Supabase" }
 } else {
     if (-not (Test-Path $Dump)) { throw "No existe el archivo $Dump" }
