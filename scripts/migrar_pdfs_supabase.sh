@@ -27,6 +27,20 @@ INV="inventario_pdfs_$(date +%F_%H%M).csv"
 urldecode() { local d="${1//+/ }"; printf '%b' "${d//%/\\x}"; }
 
 mkdir -p "$DEST"
+
+# La carpeta la crea el contenedor, que corre como uid 1001 (nextjs): el usuario
+# del host no suele poder escribir en ella. Mejor avisar aquí que fallar 21 veces.
+if ! touch "$DEST/.prueba_escritura" 2>/dev/null; then
+    cat >&2 <<AYUDA
+Sin permiso de escritura en $DEST (pertenece al uid 1001 del contenedor).
+Corre el script como root y devuélvele el dueño al terminar:
+
+  su -c 'cd $(pwd) && bash scripts/migrar_pdfs_supabase.sh && chown -R 1001:1001 $DEST'
+AYUDA
+    exit 1
+fi
+rm -f "$DEST/.prueba_escritura"
+
 echo 'tabla,id,archivo,bytes,sha256,url_origen' > "$INV"
 
 total=0; bajados=0; existentes=0; fallos=0
