@@ -534,6 +534,28 @@ const _getSaldosBancarios = unstable_cache(
 );
 export async function getSaldosBancarios() { return _getSaldosBancarios(); }
 
+// --- INFORMES DE IMPACTO (por grupo, editados desde Catálogos) ---
+
+const _getInformesImpacto = unstable_cache(
+  async () => {
+    try {
+      const { rows } = await query(
+        `select id, grupo_id, linea_id, titulo, fecha_inicio, fecha_fin, archivo_url
+           from informe_impacto
+          order by fecha_inicio asc`,
+      );
+      return rows as any[];
+    } catch (err: any) {
+      // La tabla puede no existir aún: degradar sin romper el dashboard.
+      console.error("Error fetching informes de impacto:", err.message);
+      return [];
+    }
+  },
+  ['catalog:informes-impacto'],
+  { revalidate: CATALOG_REVALIDATE_SECONDS, tags: [CATALOG_TAG] } // ediciones desde Catálogos lo invalidan
+);
+export async function getInformesImpacto() { return _getInformesImpacto(); }
+
 // --- PROYECTOS CRUD ACTIONS ---
 
 /** Valida un nombre de columna dinámico (permite ñ/acentos, rechaza comillas). */
