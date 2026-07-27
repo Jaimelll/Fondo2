@@ -9,11 +9,23 @@
 // hace contra information_schema (reemplaza al RPC catalogo_columnas).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { query } from '@/lib/db';
 import { getSession } from '@/lib/session';
 import { getNormalizedEmail, SUPER_ADMIN } from '@/config/permissions';
 import { esTablaValida, type Columna } from './tablas';
+
+// Tag de los catálogos cacheados con unstable_cache en src/app/dashboard/actions.ts
+// (líneas, ejes, etapas, regiones, especialistas, etc. — TTL 1 hora). Toda
+// escritura desde este módulo DEBE invalidarlo, o el resto de la app seguirá
+// sirviendo la lista vieja hasta por una hora.
+const CATALOG_TAG = 'catalogos';
+
+function invalidarCatalogos(tabla: string) {
+    revalidateTag(CATALOG_TAG, 'max'); // Next 16 exige el 2º arg; 'max' = invalidación total
+    revalidatePath(`/dashboard/catalogos/${tabla}`);
+    revalidatePath('/dashboard/catalogos');
+}
 
 /** Lanza si el usuario actual no es el super admin. */
 async function assertSuperAdmin() {
@@ -151,6 +163,11 @@ export async function crearFila(
         if (c.hasDefault && (payload[c.name] === null || payload[c.name] === undefined)) {
             delete payload[c.name];
         }
+        // PK vacía: dejar que la genere la BD (por si alguna tabla declara la
+        // identidad de un modo que la introspección no marca como default).
+        if (c.isPk && (payload[c.name] === null || payload[c.name] === undefined)) {
+            delete payload[c.name];
+        }
     }
     try {
         const cols = Object.keys(payload);
@@ -163,8 +180,7 @@ export async function crearFila(
     } catch (err: any) {
         return { ok: false, error: err.message };
     }
-    revalidatePath(`/dashboard/catalogos/${tabla}`);
-    revalidatePath('/dashboard/catalogos');
+    invalidarCatalogos(tabla);
     return { ok: true };
 }
 
@@ -190,7 +206,7 @@ export async function actualizarFila(
     } catch (err: any) {
         return { ok: false, error: err.message };
     }
-    revalidatePath(`/dashboard/catalogos/${tabla}`);
+    invalidarCatalogos(tabla);
     return { ok: true };
 }
 
@@ -209,7 +225,6 @@ export async function eliminarFila(
             : err.message;
         return { ok: false, error: msg };
     }
-    revalidatePath(`/dashboard/catalogos/${tabla}`);
-    revalidatePath('/dashboard/catalogos');
+    invalidarCatalogos(tabla);
     return { ok: true };
 }

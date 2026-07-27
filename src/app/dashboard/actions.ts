@@ -535,25 +535,36 @@ async function getAuditUserId(): Promise<string | null> {
 
 export async function createProyecto(formData: any) {
   const userId = await getAuditUserId();
-  const cols = Object.keys(formData);
-  const values = cols.map((c) => formData[c]);
-  const placeholders = cols.map((_, i) => `$${i + 1}`);
+  // proyectos.id no tiene default/secuencia en la BD, así que se asigna
+  // max(id)+1 dentro del propio insert. Si dos altas simultáneas chocan
+  // (23505), se reintenta con el nuevo máximo.
+  const { id: _idIgnorado, ...datos } = formData;
+  const cols = Object.keys(datos);
+  const values = cols.map((c) => datos[c]);
+  const listaCols = ['"id"', ...cols.map(colName)].join(', ');
+  const listaValores = [
+    'coalesce((select max(id) from proyectos), 0) + 1',
+    ...cols.map((_, i) => `$${i + 1}`),
+  ].join(', ');
 
-  try {
-    const rows = await withAuditUser(userId, async (client) => {
-      const result = await client.query(
-        `insert into proyectos (${cols.map(colName).join(', ')}) values (${placeholders.join(', ')}) returning *`,
-        values,
-      );
-      return result.rows;
-    });
+  for (let intento = 0; ; intento++) {
+    try {
+      const rows = await withAuditUser(userId, async (client) => {
+        const result = await client.query(
+          `insert into proyectos (${listaCols}) select ${listaValores} returning *`,
+          values,
+        );
+        return result.rows;
+      });
 
-    revalidatePath('/dashboard/gestion-proyectos');
-    revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
-    return rows;
-  } catch (error: any) {
-    console.error("Error creating proyecto:", error);
-    throw new Error(error.message);
+      revalidatePath('/dashboard/gestion-proyectos');
+      revalidateTag(CATALOG_TAG, 'max'); // años, grupos podrían haber cambiado (Next 16 exige el 2º arg; 'max' preserva el comportamiento previo)
+      return rows;
+    } catch (error: any) {
+      if (error?.code === '23505' && intento < 2) continue; // id duplicado: reintentar
+      console.error("Error creating proyecto:", error);
+      throw new Error(error.message);
+    }
   }
 }
 
