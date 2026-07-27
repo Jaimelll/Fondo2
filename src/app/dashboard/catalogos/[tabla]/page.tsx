@@ -3,9 +3,10 @@ import { notFound, redirect } from 'next/navigation';
 import { unstable_noStore as noStore } from 'next/cache';
 import { ChevronLeft } from 'lucide-react';
 import { getSession } from '@/lib/session';
-import { getNormalizedEmail, SUPER_ADMIN } from '@/config/permissions';
-import { esTablaValida, etiquetaTabla } from '../tablas';
-import { getColumnas, getFilas } from '../actions';
+import { getModulosUsuario } from '@/lib/permisos';
+import { puedeVerCatalogos, puedeEditarCatalogos } from '@/config/permissions';
+import { esTablaValida, etiquetaTabla, COLUMNAS_OCULTAS, ORDEN_FILAS } from '../tablas';
+import { getColumnas, getFilas, getOpcionesCombo } from '../actions';
 import CatalogoEditor from './CatalogoEditor';
 
 export const dynamic = 'force-dynamic';
@@ -20,19 +21,25 @@ export default async function CatalogoDetallePage({
     const { tabla } = await params;
     if (!esTablaValida(tabla)) notFound();
 
-    // Guarda de página: solo el super admin.
+    // Guarda de página: super admin (edición) o módulo Catálogos (solo lectura).
     const session = await getSession();
-    if (getNormalizedEmail(session?.user.email) !== SUPER_ADMIN) {
+    const email = session?.user.email;
+    if (!puedeVerCatalogos(email, await getModulosUsuario(email))) {
         redirect('/dashboard');
     }
+    const soloLectura = !puedeEditarCatalogos(email);
 
-    const [columnas, filas] = await Promise.all([
+    const [columnasTodas, filas, opcionesCombo] = await Promise.all([
         getColumnas(tabla),
         getFilas(tabla),
+        getOpcionesCombo(tabla),
     ]);
 
+    const ocultas = COLUMNAS_OCULTAS[tabla] ?? [];
+    const columnas = columnasTodas.filter((c) => !ocultas.includes(c.name));
+
     return (
-        <div className="max-w-5xl space-y-4">
+        <div className="max-w-7xl space-y-4">
             <Link
                 href="/dashboard/catalogos"
                 className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800"
@@ -52,13 +59,18 @@ export default async function CatalogoDetallePage({
 
             {columnas.length === 0 ? (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                    No se pudieron detectar las columnas de esta tabla (¿está vacía
-                    y sin el RPC <code>catalogo_columnas</code>?). Ejecuta{' '}
-                    <code>scripts/catalogo_introspection.sql</code> en Supabase para
-                    habilitar la introspección incluso de tablas vacías.
+                    No se pudieron detectar las columnas de esta tabla: no existe en
+                    el esquema <code>public</code> de la base.
                 </div>
             ) : (
-                <CatalogoEditor tabla={tabla} columnas={columnas} filas={filas} />
+                <CatalogoEditor
+                    tabla={tabla}
+                    columnas={columnas}
+                    filas={filas}
+                    opcionesCombo={opcionesCombo}
+                    ordenFilas={ORDEN_FILAS[tabla]}
+                    readOnly={soloLectura}
+                />
             )}
         </div>
     );
