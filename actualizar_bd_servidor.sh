@@ -20,12 +20,12 @@ TABLAS=(
   unidades_operativas
 )
 
-echo "1/5 Backup local de seguridad..."
+echo "1/6 Backup local de seguridad..."
 BK="backup_fondo2_servidor_$FECHA.dump"
 docker compose exec -T db pg_dump -U fondo2 -d fondo2 -F c -f "/tmp/$BK"
 docker compose cp "db:/tmp/$BK" "./$BK"
 
-echo "2/5 Analizando el dump..."
+echo "2/6 Analizando el dump..."
 docker compose cp "$DUMP" db:/tmp/restore.dump
 mapfile -t EN_DUMP < <(docker compose exec -T db pg_restore -l /tmp/restore.dump | sed -n 's/.*TABLE DATA public \([^ ]*\).*/\1/p')
 OBJ=()
@@ -35,17 +35,22 @@ done
 [[ ${#OBJ[@]} -gt 0 ]] || { echo "El dump no contiene tablas de negocio"; exit 1; }
 echo "   Tablas a refrescar: ${#OBJ[@]} de ${#TABLAS[@]}"
 
-echo "3/5 Reemplazando datos..."
+echo "3/6 Reemplazando datos..."
 LISTA=$(printf '"%s", ' "${OBJ[@]}"); LISTA=${LISTA%, }
 docker compose exec -T db psql -U fondo2 -d fondo2 -v ON_ERROR_STOP=1 -c "TRUNCATE TABLE $LISTA CASCADE;"
 TARGS=(); for t in "${OBJ[@]}"; do TARGS+=(-t "$t"); done
 docker compose exec -T db pg_restore -U fondo2 -d fondo2 --data-only --disable-triggers --no-owner -n public "${TARGS[@]}" /tmp/restore.dump \
   || echo "   pg_restore reporto advertencias; revisar salida. Backup: $BK"
 
-echo "4/5 Ajustando secuencias..."
+echo "4/6 Ajustando secuencias..."
 docker compose exec -T db psql -U fondo2 -d fondo2 -v ON_ERROR_STOP=1 < scripts/fix_sequences.sql
 
-echo "5/5 Resumen:"
+# El dump de Supabase trae las URLs de sus buckets; los PDFs ya viven en disco,
+# asi que hay que volver a apuntarlas a /api/documentos tras cada restore.
+echo "5/6 Reapuntando URLs de PDFs al storage local..."
+docker compose exec -T db psql -U fondo2 -d fondo2 -v ON_ERROR_STOP=1 < scripts/reescribir_urls_locales.sql
+
+echo "6/6 Resumen:"
 docker compose exec -T db psql -U fondo2 -d fondo2 -c "ANALYZE;" >/dev/null
 docker compose exec -T db psql -U fondo2 -d fondo2 -c "SELECT relname AS tabla, n_live_tup AS filas FROM pg_stat_user_tables WHERE schemaname='public' ORDER BY relname;"
 docker compose exec -T db rm -f /tmp/restore.dump
