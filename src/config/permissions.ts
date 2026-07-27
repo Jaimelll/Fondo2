@@ -19,7 +19,7 @@ export const RUTA_POR_MODULO: Record<string, string> = {
     'Gestión de Proyectos': '/dashboard/gestion-proyectos',
     'Gestión de Servicios': '/dashboard/gestion-servicios',
     'Gestión de Aportantes': '/dashboard/gestion-aportantes',
-    'Catálogos': '/dashboard/catalogos', // solo super admin (ver Sidebar y guardas de página)
+    'Catálogos': '/dashboard/catalogos', // edita el super admin; con el módulo asignado se ve en solo lectura
 };
 
 // Rutas que siempre están permitidas sin importar el perfil.
@@ -50,6 +50,16 @@ export function getNormalizedEmail(email?: string | null): string {
 export function tieneAccesoModulo(modulos: Modulos, modulo: string): boolean {
     if (modulos === 'ALL') return true;
     return modulos.some((m) => m.trim().toLowerCase() === modulo.trim().toLowerCase());
+}
+
+/** Puede VER el módulo Catálogos (super admin o usuarios con el módulo asignado). */
+export function puedeVerCatalogos(email: string | null | undefined, modulos: Modulos): boolean {
+    return getNormalizedEmail(email) === SUPER_ADMIN || tieneAccesoModulo(modulos, 'Catálogos');
+}
+
+/** Puede EDITAR (crear/actualizar/eliminar) en Catálogos: solo el super admin. */
+export function puedeEditarCatalogos(email: string | null | undefined): boolean {
+    return getNormalizedEmail(email) === SUPER_ADMIN;
 }
 
 /** Devuelve true si la ruta pathname está permitida para esos módulos */
