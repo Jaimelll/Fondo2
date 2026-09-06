@@ -1,6 +1,7 @@
 "use server";
 
 import { query } from '@/lib/db';
+import { sectorAgrupado } from '@/config/sectoresAgrupados';
 
 export async function getAportantesData() {
     let rows: any[];
@@ -9,7 +10,7 @@ export async function getAportantesData() {
         // empresa y sector existen (INNER JOIN).
         const result = await query(
             `select a.id, a.empresa_ruc, a.anio, a.monto,
-                    e.razon_social, s.seccion_desc
+                    e.razon_social, s.seccion_desc, s.ciiu_codigo
                from aportes a
                join empresas e on e.ruc = a.empresa_ruc
                join sectores_ciiu s on s.id = e.ciiu_id`,
@@ -26,13 +27,18 @@ export async function getAportantesData() {
         const anio = Number(row.anio);
         annualTotals[anio] = (annualTotals[anio] || 0) + monto;
 
+        const ciiuCodigo = (row.ciiu_codigo || '').trim();
+        const seccionDesc = row.seccion_desc || 'Desconocido';
+
         return {
             id: row.id,
             ruc: row.empresa_ruc,
             anio,
             monto,
             razon_social: row.razon_social || 'Desconocido',
-            seccion_desc: row.seccion_desc || 'Desconocido'
+            seccion_desc: seccionDesc,
+            ciiu_codigo: ciiuCodigo,
+            sector_grupo: sectorAgrupado(ciiuCodigo, seccionDesc)
         };
     });
 

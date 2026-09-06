@@ -20,6 +20,17 @@ import { getSession } from '@/lib/session';
 import { getModulosUsuario } from '@/lib/permisos';
 import { getNormalizedEmail, SUPER_ADMIN, puedeVerCatalogos } from '@/config/permissions';
 import { esTablaValida, COLUMNAS_COMBO, type Columna } from './tablas';
+import {
+    afectadosDeInforme,
+    reconciliarTodosLosInformes,
+    sincronizarYRecalcular,
+    type ResultadoSync,
+} from './impacto';
+
+// Tabla cuyos cambios se proyectan sobre la bitácora de etapas de los proyectos
+// (ver impacto.ts): declarar un informe de impacto mueve a sus proyectos a la
+// etapa Impacto, y borrarlo los devuelve a la etapa anterior.
+const TABLA_INFORMES = 'informe_impacto';
 
 // Tag de los catálogos cacheados con unstable_cache en src/app/dashboard/actions.ts
 // (líneas, ejes, etapas, regiones, especialistas, etc. — TTL 1 hora). Toda
@@ -31,6 +42,14 @@ function invalidarCatalogos(tabla: string) {
     revalidateTag(CATALOG_TAG, 'max'); // Next 16 exige el 2º arg; 'max' = invalidación total
     revalidatePath(`/dashboard/catalogos/${tabla}`);
     revalidatePath('/dashboard/catalogos');
+    if (tabla === TABLA_INFORMES) {
+        // Los informes cambian la etapa de proyectos y becas: refrescar también
+        // las bandejas que la leen.
+        revalidatePath('/dashboard');
+        revalidatePath('/dashboard/gestion-proyectos');
+        revalidatePath('/dashboard/servicios');
+        revalidatePath('/dashboard/gestion-servicios');
+    }
 }
 
 /** Lanza si el usuario actual no es el super admin (guarda de ESCRITURA). */
@@ -241,10 +260,12 @@ function coerce(
 
 // ─── Escritura (CRUD) ──────────────────────────────────────────────────────────
 
+export type ResultadoCRUD = { ok: boolean; error?: string; aviso?: string };
+
 export async function crearFila(
     tabla: string,
     valores: Record<string, any>,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<ResultadoCRUD> {
     await assertSuperAdmin();
     assertTabla(tabla);
     const columnas = await getColumnas(tabla);
@@ -260,19 +281,60 @@ export async function crearFila(
             delete payload[c.name];
         }
     }
+    const cols = Object.keys(payload);
+    const values = cols.map((c) => payload[c]);
+    const placeholders = cols.map((_, i) => `$${i + 1}`);
+    const sql = `insert into ${ident(tabla)} (${cols.map(ident).join(', ')}) values (${placeholders.join(', ')})`;
+
+    // El informe recién creado tiene que proyectarse sobre la bitácora de sus
+    // proyectos, así que necesitamos su id (RETURNING id).
+    if (tabla === TABLA_INFORMES) {
+        let nuevoId: number;
+        try {
+            const { rows } = await query(`${sql} returning id`, values);
+            nuevoId = Number(rows[0]?.id);
+        } catch (err: any) {
+            return { ok: false, error: err.message };
+        }
+        const aviso = await sincronizarImpactoSeguro(nuevoId);
+        invalidarCatalogos(tabla);
+        return { ok: true, aviso };
+    }
+
     try {
-        const cols = Object.keys(payload);
-        const values = cols.map((c) => payload[c]);
-        const placeholders = cols.map((_, i) => `$${i + 1}`);
-        await query(
-            `insert into ${ident(tabla)} (${cols.map(ident).join(', ')}) values (${placeholders.join(', ')})`,
-            values,
-        );
+        await query(sql, values);
     } catch (err: any) {
         return { ok: false, error: err.message };
     }
     invalidarCatalogos(tabla);
     return { ok: true };
+}
+
+/**
+ * Sincroniza el informe con la bitácora de etapas y devuelve un aviso legible
+ * si algo quedó para revisión manual.
+ *
+ * No relanza: la fila del catálogo ya se guardó y no queremos revertirla por un
+ * fallo de la proyección. El error se reporta al usuario, que puede reintentar
+ * con "Reconciliar informes" (la sincronización es idempotente).
+ */
+async function sincronizarImpactoSeguro(informeId: number): Promise<string | undefined> {
+    try {
+        const res = await sincronizarYRecalcular(informeId);
+        if (!res) return undefined;
+        const avisos = [...res.avisos];
+        const cambios = res.creados + res.adoptados + res.actualizados + res.eliminados;
+        if (cambios > 0) {
+            avisos.unshift(
+                `Etapa Impacto sincronizada: ${res.creados} evento(s) nuevo(s), ` +
+                `${res.adoptados} vinculado(s), ${res.actualizados} con fecha corregida, ` +
+                `${res.eliminados} eliminado(s).`,
+            );
+        }
+        return avisos.length > 0 ? avisos.join(' ') : undefined;
+    } catch (e: any) {
+        return `El informe se guardó, pero no se pudo actualizar la etapa de los proyectos: ${e?.message ?? e}. Usa "Reconciliar informes" para reintentar.`;
+    }
 }
 
 // ─── Storage local de PDFs (columnas archivo_url) ──────────────────────────────
@@ -319,7 +381,7 @@ export async function actualizarFila(
     pkCol: string,
     pkVal: string | number,
     valores: Record<string, any>,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<ResultadoCRUD> {
     await assertSuperAdmin();
     assertTabla(tabla);
     const columnas = await getColumnas(tabla);
@@ -351,8 +413,16 @@ export async function actualizarFila(
     } catch (err: any) {
         return { ok: false, error: err.message };
     }
+
+    // Cambiar grupo, línea o fecha de inicio cambia a qué proyectos alcanza el
+    // informe y desde cuándo: hay que reproyectarlo entero.
+    let aviso: string | undefined;
+    if (tabla === TABLA_INFORMES) {
+        aviso = await sincronizarImpactoSeguro(Number(pkVal));
+    }
+
     invalidarCatalogos(tabla);
-    return { ok: true };
+    return { ok: true, aviso };
 }
 
 function sanitizeFileName(fileName: string): string {
@@ -394,9 +464,17 @@ export async function eliminarFila(
     tabla: string,
     pkCol: string,
     pkVal: string | number,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<ResultadoCRUD> {
     await assertSuperAdmin();
     assertTabla(tabla);
+
+    // Los eventos de etapa Impacto se van solos con el informe (ON DELETE
+    // CASCADE), pero hay que saber A QUIÉN recalcular antes de que desaparezcan:
+    // después del borrado no queda rastro del vínculo.
+    let porRecalcular: { destino: { etiqueta: string; recalcular: (ids: number[]) => Promise<void> }; ids: number[] } | null = null;
+    if (tabla === TABLA_INFORMES) {
+        porRecalcular = await afectadosDeInforme(Number(pkVal));
+    }
 
     // Capturar el archivo_url antes de borrar (si la tabla tiene esa columna)
     // para eliminar también el PDF local cuando quede huérfano.
@@ -420,6 +498,60 @@ export async function eliminarFila(
 
     if (urlArchivo) await limpiarArchivoSiHuerfano(tabla, urlArchivo);
 
+    // El CASCADE ya borró los eventos: al recalcular, cada proyecto vuelve a la
+    // etapa de su evento anterior (normalmente Pre-Impacto).
+    let aviso: string | undefined;
+    if (porRecalcular && porRecalcular.ids.length > 0) {
+        const { destino, ids } = porRecalcular;
+        try {
+            await destino.recalcular(ids);
+            aviso = `Se revirtió la etapa Impacto en ${ids.length} ${destino.etiqueta}(s).`;
+        } catch (e: any) {
+            aviso = `El informe se eliminó, pero no se pudo recalcular la etapa de sus ${destino.etiqueta}s: ${e?.message ?? e}.`;
+        }
+    }
+
     invalidarCatalogos(tabla);
-    return { ok: true };
+    return { ok: true, aviso };
+}
+
+/**
+ * Vuelve a proyectar TODOS los informes sobre la bitácora de etapas. Se usa
+ * para la carga inicial (informes registrados antes de que existiera esta
+ * sincronización) y como red de seguridad si la tabla se edita por fuera del
+ * módulo Catálogos. Es idempotente.
+ */
+export async function reconciliarInformesImpacto(): Promise<{
+    ok: boolean;
+    error?: string;
+    resumen?: string;
+    avisos?: string[];
+}> {
+    await assertSuperAdmin();
+    try {
+        const resultados: ResultadoSync[] = await reconciliarTodosLosInformes();
+        const total = resultados.reduce(
+            (acc, r) => ({
+                creados: acc.creados + r.creados,
+                adoptados: acc.adoptados + r.adoptados,
+                actualizados: acc.actualizados + r.actualizados,
+                eliminados: acc.eliminados + r.eliminados,
+            }),
+            { creados: 0, adoptados: 0, actualizados: 0, eliminados: 0 },
+        );
+        const avisos = resultados.flatMap((r) =>
+            r.avisos.map((a) => `${r.titulo}: ${a}`),
+        );
+        invalidarCatalogos(TABLA_INFORMES);
+        return {
+            ok: true,
+            resumen:
+                `${resultados.length} informe(s) revisado(s) · ` +
+                `${total.creados} evento(s) creado(s), ${total.adoptados} vinculado(s), ` +
+                `${total.actualizados} con fecha corregida, ${total.eliminados} eliminado(s).`,
+            avisos,
+        };
+    } catch (e: any) {
+        return { ok: false, error: e?.message ?? String(e) };
+    }
 }

@@ -7,6 +7,7 @@ import {
     updateAvanceProyecto,
     deleteAvanceProyecto
 } from "@/app/dashboard/actions";
+import { acumuladosPorEvento, arrastreVigente, esArrastre, extraerOrdenPago } from "@/lib/pagos";
 
 interface ProyectoModalProps {
     isOpen: boolean;
@@ -64,7 +65,8 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
         etapa_id: "",
         fecha: new Date().toISOString().split('T')[0],
         sustento: "",
-        monto: 0
+        monto: 0,
+        descontarDeArrastre: false
     });
     const [actionFeedback, setActionFeedback] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
@@ -98,7 +100,8 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
                 etapa_id: proyecto.etapaId || "",
                 fecha: new Date().toISOString().split('T')[0],
                 sustento: "",
-                monto: 0
+                monto: 0,
+                descontarDeArrastre: false
             });
             setShowAvances(false);
             setEditingAvance(null);
@@ -195,7 +198,8 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
                 etapa_id: proyecto.etapaId || "",
                 fecha: new Date().toISOString().split('T')[0],
                 sustento: "",
-                monto: 0
+                monto: 0,
+                descontarDeArrastre: false
             });
 
             // Auto-refresh/close after a short delay for feedback
@@ -522,14 +526,14 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
                                 <div className="space-y-1">
                                     <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Avance Total (S/)</label>
                                     <input
-                                        type={isReadOnly ? "text" : "number"}
+                                        type="text"
                                         name="avance"
-                                        step="0.01"
-                                        value={isReadOnly ? formatCurrency(formData.avance) : formData.avance}
-                                        onChange={handleChange}
-                                        className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none"
-                                        disabled={isReadOnly}
+                                        value={formatCurrency(formData.avance)}
+                                        readOnly
+                                        className="w-full px-4 py-2 bg-gray-100 border border-gray-200 rounded-xl focus:outline-none text-gray-600"
+                                        disabled
                                     />
+                                    <p className="text-[9px] text-blue-500 font-bold px-1 uppercase mt-1">Suma de los pagos registrados en Gestión de Avances</p>
                                 </div>
 
                                 <div className="space-y-1">
@@ -621,7 +625,7 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
                                                 />
                                             </div>
                                             <div className="space-y-1">
-                                                <label className="text-xs font-bold text-gray-400 uppercase">Monto de Avance (S/.)</label>
+                                                <label className="text-xs font-bold text-gray-400 uppercase">Pago parcial (S/.)</label>
                                                 <input
                                                     type="number"
                                                     step="0.01"
@@ -630,6 +634,7 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
                                                     className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none"
                                                     placeholder="0.00"
                                                 />
+                                                <p className="text-[9px] text-gray-400 italic">Solo el monto de este pago; el acumulado se calcula solo.</p>
                                             </div>
 
                                             <div className="md:col-span-2 space-y-1">
@@ -638,9 +643,24 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
                                                     value={newAvance.sustento}
                                                     onChange={(e) => setNewAvance({ ...newAvance, sustento: e.target.value })}
                                                     className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none h-20 resize-none"
-                                                    placeholder="Ej: Informe trimestral entregado"
+                                                    placeholder="Si es un pago, empiece con la orden de pago. Ej: OP 138-UPS-AS - S/ 903.40"
                                                 />
                                             </div>
+
+                                            {arrastreVigente(proyecto?.avances) && Number(newAvance.monto) > 0 && (
+                                                <label className="md:col-span-2 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg cursor-pointer">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={newAvance.descontarDeArrastre}
+                                                        onChange={(e) => setNewAvance({ ...newAvance, descontarDeArrastre: e.target.checked })}
+                                                        className="mt-0.5"
+                                                    />
+                                                    <span className="text-[11px] text-amber-800 leading-snug">
+                                                        <b>Este pago ya está incluido en el arrastre</b> ({formatCurrency(arrastreVigente(proyecto?.avances)?.monto ?? 0)}).
+                                                        Se registra para dejarlo trazable y el arrastre baja en el mismo monto; el avance total no cambia.
+                                                    </span>
+                                                </label>
+                                            )}
                                         </div>
 
                                         {actionFeedback && (
@@ -673,8 +693,10 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
                                 <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Historial de Avances del Proyecto</label>
                                 <div className="space-y-2">
                                     {proyecto.avances && proyecto.avances.length > 0 ? (
-                                        [...proyecto.avances].sort((a, b) => (new Date(b.fecha) as any) - (new Date(a.fecha) as any)).map((av: any, idx: number) => (
-                                            <div key={av.id || idx} className="flex items-center justify-between p-4 bg-white border border-gray-100 rounded-xl shadow-sm hover:border-blue-200 transition-colors">
+                                        (() => {
+                                            const acumulados = acumuladosPorEvento(proyecto.avances);
+                                            return [...proyecto.avances].sort((a, b) => (new Date(b.fecha) as any) - (new Date(a.fecha) as any)).map((av: any, idx: number) => (
+                                            <div key={av.id || idx} className={`flex items-center justify-between p-4 bg-white border rounded-xl shadow-sm hover:border-blue-200 transition-colors ${esArrastre(av) ? 'border-amber-200 bg-amber-50/40' : 'border-gray-100'}`}>
                                                 <div className="flex flex-col flex-1">
                                                     <span className="text-sm font-black text-blue-600">
                                                         {(() => {
@@ -686,8 +708,21 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
 
                                                     <span className="text-base font-bold text-gray-800">
                                                         {av.etapa_nombre || options.etapas.find(o => Number(o.value) === Number(av.etapa_id))?.label || `Etapa ${av.etapa_id}`}
-                                                        {av.monto > 0 && <span className="ml-2 text-blue-600 font-black">({formatCurrency(av.monto)})</span>}
                                                     </span>
+                                                    {(Number(av.monto) > 0 || esArrastre(av)) && (
+                                                        <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px]">
+                                                            {esArrastre(av) ? (
+                                                                <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 font-black uppercase tracking-wide">Arrastre{Number(av.monto) > 0 ? '' : ' desglosado'}</span>
+                                                            ) : (
+                                                                <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 font-black uppercase tracking-wide">Pago</span>
+                                                            )}
+                                                            {extraerOrdenPago(av.sustento) && (
+                                                                <span className="px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 font-bold">{extraerOrdenPago(av.sustento)}</span>
+                                                            )}
+                                                            <span className="text-gray-500">Parcial <b className="text-gray-800">{formatCurrency(av.monto)}</b></span>
+                                                            <span className="text-gray-500">Acumulado <b className="text-blue-700">{formatCurrency(acumulados.get(av.id) ?? 0)}</b></span>
+                                                        </div>
+                                                    )}
                                                     <p className="text-sm text-gray-500 italic mt-1 leading-relaxed">{av.sustento || '-'}</p>
 
                                                 </div>
@@ -716,7 +751,8 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
                                                     </div>
                                                 )}
                                             </div>
-                                        ))
+                                            ));
+                                        })()
                                     ) : (
                                         <p className="text-sm text-gray-400 italic text-center py-4 bg-gray-50 rounded-xl">No hay historial de avances registrado.</p>
                                     )}
@@ -756,7 +792,7 @@ export default function ProyectoModal({ isOpen, onClose, onSave, proyecto, isRea
                                     />
                                 </div>
                                 <div className="space-y-1">
-                                    <label className="text-xs font-bold text-gray-400 uppercase">Monto de Avance (S/.)</label>
+                                    <label className="text-xs font-bold text-gray-400 uppercase">Pago parcial (S/.)</label>
                                     <input
                                         type="number"
                                         step="0.01"

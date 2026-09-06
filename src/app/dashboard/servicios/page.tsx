@@ -57,7 +57,9 @@ export default function ServiciosPage() {
     const [selectedCondicion, setSelectedCondicion] = useState<string>('all');
     const [selectedInstitucion, setSelectedInstitucion] = useState<string>('all');
     const [selectedTipoEstudio, setSelectedTipoEstudio] = useState<string>('all');
-    const [selectedGrupo, setSelectedGrupo] = useState<string>('all');
+    // Grupo es multi-selección: lista vacía = todos los grupos (misma convención
+    // que 'all' en el resto de filtros), igual que el filtro de Proyectos.
+    const [selectedGrupos, setSelectedGrupos] = useState<string[]>([]);
 
     // -- Modal and loading states for map click --------------------------------
     const [selectedModalServicio, setSelectedModalServicio] = useState<any>(null);
@@ -120,20 +122,16 @@ export default function ServiciosPage() {
                 }
             });
             setEtapaFaseMap(faseMap);
-            // Preserve canonical order defined in spec
-            const FASE_ORDER = [
-                'Etapa Concursal',
-                'Acciones Preparatorias',
-                'Ejecución del Proyecto',
-                'Cierre Administrativo',
-                'Resuelto',
-                'Pre-Impacto',
-                'Impacto',
-            ];
-            const sortedFases = FASE_ORDER.filter(f => fasesSet.has(f));
-            // Append any DB fases not in the canonical list, preserving flexibility
-            fasesSet.forEach(f => { if (!sortedFases.includes(f)) sortedFases.push(f); });
-            setFases(sortedFases);
+            // El orden de las fases sale del propio catálogo de etapas, que llega
+            // ordenado por id: recorrerlo da Etapa Concursal → Acciones
+            // Preparatorias → En Ejecución → Cierre Administrativo → Resuelto →
+            // Pre-Impacto → Impacto, que es el avance real del ciclo.
+            //
+            // Antes había una lista fija con "Ejecución del Proyecto", nombre que
+            // no existe en `etapas.fase` (el valor real es "En Ejecución"): nunca
+            // casaba, caía en el "append lo que no reconozco" y terminaba al
+            // final, después de Impacto. Derivarlo del catálogo no se desincroniza.
+            setFases(Array.from(fasesSet));
 
             setFilterOptions({
                 etapas: dedupEtapas.map((e: any) => ({ id: e.id, descripcion: e.descripcion })),
@@ -201,7 +199,7 @@ export default function ServiciosPage() {
                 const matchCondicion = excludeKey === 'condicion' || selectedCondicion === 'all' || String(item.condicion_id) === selectedCondicion;
                 const matchInstitucion = excludeKey === 'institucion' || selectedInstitucion === 'all' || String(item.institucion_id) === selectedInstitucion;
                 const matchTipoEstudio = excludeKey === 'tipoEstudio' || selectedTipoEstudio === 'all' || String(item.tipo_estudio_id) === selectedTipoEstudio;
-                const matchGrupo = excludeKey === 'grupo' || selectedGrupo === 'all' || String(item.grupo_id) === selectedGrupo;
+                const matchGrupo = excludeKey === 'grupo' || selectedGrupos.length === 0 || selectedGrupos.includes(String(item.grupo_id));
                 
                 return matchFase && matchEtapa && matchEje && matchLinea && matchCondicion && matchInstitucion && matchTipoEstudio && matchGrupo;
             });
@@ -224,7 +222,16 @@ export default function ServiciosPage() {
             grupos: filterOptions.grupos.filter(g => usedInSubset(getFilteredSubset('grupo'), 'grupo_id').has(g.id)),
             modalidades: filterOptions.modalidades,
         };
-    }, [data, filterOptions, selectedFase, selectedEtapa, selectedEje, selectedLinea, selectedCondicion, selectedInstitucion, selectedTipoEstudio, selectedGrupo, etapaFaseMap, fases]);
+    }, [data, filterOptions, selectedFase, selectedEtapa, selectedEje, selectedLinea, selectedCondicion, selectedInstitucion, selectedTipoEstudio, selectedGrupos, etapaFaseMap, fases]);
+
+    // Si otro filtro deja fuera un grupo ya marcado, se descarta la marca para
+    // que el resumen del combo nunca prometa un filtro que no está aplicando.
+    useEffect(() => {
+        if (selectedGrupos.length === 0) return;
+        const vigentes = new Set((availableFilterOptions.grupos || []).map((g: any) => String(g.id)));
+        const podados = selectedGrupos.filter(v => vigentes.has(v));
+        if (podados.length !== selectedGrupos.length) setSelectedGrupos(podados);
+    }, [availableFilterOptions.grupos, selectedGrupos]);
 
     // -- Filtering Logic -------------------------------------------------------
     const filteredData = useMemo(() => {
@@ -264,14 +271,33 @@ export default function ServiciosPage() {
                 selectedTipoEstudio === 'all' ||
                 String(item.tipo_estudio_id) === selectedTipoEstudio;
 
-            // 8. Grupo filter
+            // 8. Grupo filter (multi-selección: lista vacía = todos)
             const matchGrupo =
-                selectedGrupo === 'all' ||
-                String(item.grupo_id) === selectedGrupo;
+                selectedGrupos.length === 0 ||
+                selectedGrupos.includes(String(item.grupo_id));
 
             return matchFase && matchEtapa && matchEje && matchLinea && matchCondicion && matchInstitucion && matchTipoEstudio && matchGrupo;
         });
-    }, [data, etapaFaseMap, selectedFase, selectedEtapa, selectedEje, selectedLinea, selectedCondicion, selectedInstitucion, selectedTipoEstudio, selectedGrupo]);
+    }, [data, etapaFaseMap, selectedFase, selectedEtapa, selectedEje, selectedLinea, selectedCondicion, selectedInstitucion, selectedTipoEstudio, selectedGrupos]);
+
+    // -- Informes visibles -----------------------------------------------------
+    // La línea de tiempo dibuja la etapa Impacto a partir de los informes, no de
+    // la etapa de las becas. Si se pasan todos, filtrar por "En Ejecución" seguía
+    // pintando el segmento de Impacto: basta con que UNA beca del grupo pase el
+    // filtro para que la fila exista, y el informe cuelga del grupo.
+    //
+    // El criterio correcto no es "el grupo está visible" sino "alguna beca DE
+    // ESTE INFORME está visible": se resuelve por el vínculo real que dejó la
+    // sincronización (avance_beca.informe_impacto_id).
+    const filteredInformesImpacto = useMemo(() => {
+        const vinculados = new Set<number>();
+        filteredData.forEach((beca: any) => {
+            (beca.avances || []).forEach((a: any) => {
+                if (a.informe_impacto_id) vinculados.add(Number(a.informe_impacto_id));
+            });
+        });
+        return informesImpacto.filter((i: any) => vinculados.has(Number(i.id)));
+    }, [filteredData, informesImpacto]);
 
     // -- Derived chart data (reactive to filteredData) -------------------------
     const bubbleMapData = useMemo(() => {
@@ -422,8 +448,8 @@ export default function ServiciosPage() {
                         setSelectedInstitucion={setSelectedInstitucion}
                         selectedTipoEstudio={selectedTipoEstudio}
                         setSelectedTipoEstudio={setSelectedTipoEstudio}
-                        selectedGrupo={selectedGrupo}
-                        setSelectedGrupo={setSelectedGrupo}
+                        selectedGrupos={selectedGrupos}
+                        setSelectedGrupos={setSelectedGrupos}
                     />
                 </div>
             </div>
@@ -436,7 +462,7 @@ export default function ServiciosPage() {
                 <ServiciosTimeline
                     data={filteredData}
                     options={timelineOptions}
-                    informesImpacto={informesImpacto}
+                    informesImpacto={filteredInformesImpacto}
                 />
             </div>
 

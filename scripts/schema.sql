@@ -193,7 +193,10 @@ CREATE TABLE public.avance_beca (
     fecha date DEFAULT CURRENT_DATE NOT NULL,
     sustento text DEFAULT 'Cargado desde Sistema FONDOEMPLEO'::text,
     created_at timestamp with time zone DEFAULT now(),
-    monto numeric DEFAULT 0 NOT NULL
+    monto numeric DEFAULT 0 NOT NULL,
+    -- Informe de impacto (Catálogos) que generó este evento. NULL = carga manual.
+    -- FK e índices en scripts/migration_impacto_avance.sql.
+    informe_impacto_id bigint
 );
 
 --
@@ -226,7 +229,10 @@ CREATE TABLE public.avance_proyecto (
     fecha date NOT NULL,
     sustento text DEFAULT 'Cargado desde Base7'::text,
     created_at timestamp with time zone DEFAULT now(),
-    monto numeric DEFAULT 0
+    monto numeric DEFAULT 0,
+    -- Informe de impacto (Catálogos) que generó este evento. NULL = carga manual.
+    -- FK e índices en scripts/migration_impacto_avance.sql.
+    informe_impacto_id bigint
 );
 
 --

@@ -3,6 +3,9 @@
 import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
 import { query, withAuditUser } from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { etiquetaEtapa, etiquetaFase } from "@/config/etapas";
+import { esArrastre, esPago } from "@/lib/pagos";
+import { descontarDeArrastre } from "@/lib/arrastre-server";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers de caché para catálogos (líneas, ejes, etc.) — datos que rara vez
@@ -50,6 +53,7 @@ const PROYECTO_BASE_SELECT = `
       'etapa_id', a.etapa_id,
       'sustento', a.sustento,
       'monto', a.monto,
+      'informe_impacto_id', a.informe_impacto_id,
       'etapa', json_build_object('descripcion', ae.descripcion)
     ) order by a.id) as avances
     from avance_proyecto a
@@ -67,6 +71,23 @@ function esFiltroActivo(value?: string | number | null): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Fecha de inicio de un proyecto: el hito más antiguo de su bitácora.
+ *
+ * Antes se buscaba el avance de etapa 1 (Bases). Eso deja sin fecha a los
+ * proyectos que no pasan por Bases —los del Eje Sectorial, cuyo primer hito es
+ * Lanzamiento, porque las Bases del eje se aprueban una vez para todo el eje y
+ * no por proyecto—. Tomar el avance más antiguo sirve para ambos casos: en los
+ * concursales sigue siendo el de Bases, que es justamente el primero.
+ */
+function primeraFechaAvance(avances?: any[] | null): string | null {
+  if (!avances || avances.length === 0) return null;
+  return avances.reduce(
+    (min: string | null, a: any) => (a?.fecha && (!min || a.fecha < min) ? a.fecha : min),
+    null,
+  );
 }
 
 function mapProyectoRow(p: any) {
@@ -89,7 +110,7 @@ function mapProyectoRow(p: any) {
     lineaId: p.linea_id,
     eje: p.eje_descripcion || 'Sin Eje',
     ejeId: p.eje_id,
-    etapa: p.etapa_descripcion || 'Sin Etapa',
+    etapa: etiquetaEtapa(p.etapa_id, p.eje_id, p.etapa_descripcion) || 'Sin Etapa',
     etapaId: p.etapa_id,
     institucion: p.institucion_nombre || 'Sin Institucion',
     institucionId: p.institucion_ejecutora_id,
@@ -97,18 +118,18 @@ function mapProyectoRow(p: any) {
     regionId: p.region_id,
     modalidad: p.modalidad_descripcion || 'Desconocido',
     modalidadId: p.modalidad_id,
-    estado: p.etapa_descripcion || 'Activo',
+    estado: etiquetaEtapa(p.etapa_id, p.eje_id, p.etapa_descripcion) || 'Activo',
     sustento: p.sustento || '',
     year: year,
     año: Number(p.año) || 0,
-    fase: p.etapa_fase || '',
+    fase: etiquetaFase(p.etapa_id, p.eje_id, p.etapa_fase),
     monto_fondoempleo: Number(p.monto_fondoempleo) || 0,
     avance: Number(p.avance) || 0,
     contrapartida: Number(p.contrapartida) || 0,
     monto_total: (Number(p.monto_fondoempleo) || 0) + (Number(p.contrapartida) || 0),
     beneficiarios: Number(p.beneficiarios) || 0,
     avance_tecnico: Number(p.avance_tecnico) || 0,
-    fecha_inicio: avances.find((a: any) => a.etapa_id === 1)?.fecha || null,
+    fecha_inicio: primeraFechaAvance(avances),
     fecha_fin: avances.find((a: any) => a.etapa_id === 6)?.fecha || null,
     avances: avances,
     grupo_id: p.grupo_id,
@@ -237,13 +258,13 @@ export async function getProyectoCompletoById(id: string) {
       lineaId: p.linea_id,
       eje: p.eje_descripcion || 'Desconocido',
       ejeId: p.eje_id,
-      etapa: p.etapa_descripcion || 'Desconocido',
+      etapa: etiquetaEtapa(p.etapa_id, p.eje_id, p.etapa_descripcion) || 'Desconocido',
       etapaId: p.etapa_id,
       region: p.region_descripcion || 'Multirregional',
       regionId: p.region_id,
       modalidad: p.modalidad_descripcion || 'Desconocido',
       modalidadId: p.modalidad_id,
-      estado: p.etapa_descripcion || 'Activo',
+      estado: etiquetaEtapa(p.etapa_id, p.eje_id, p.etapa_descripcion) || 'Activo',
       sustento: p.sustento || '',
       year: year,
       año: Number(p.año) || 0,
@@ -253,7 +274,7 @@ export async function getProyectoCompletoById(id: string) {
       monto_total: Number(p.monto_total) || 0,
       beneficiarios: Number(p.beneficiarios) || 0,
       avance_tecnico: Number(p.avance_tecnico) || 0,
-      fecha_inicio: p.avances?.find((a: any) => Number(a.etapa_id) === 1)?.fecha || null,
+      fecha_inicio: primeraFechaAvance(p.avances),
       fecha_fin: p.avances?.find((a: any) => Number(a.etapa_id) === 6)?.fecha || null,
       avances: p.avances?.map((av: any) => ({
         ...av,
@@ -420,6 +441,17 @@ export async function getFasesOptions() { return _getFasesOptions(); }
 
 // --- TIMELINE ACTIONS ---
 
+/**
+ * Grupos que NO se dibujan en la línea de tiempo, aunque sí cuenten en los KPI
+ * y en la tabla. Son cubos de historia: propuestas que no prosperaron, cuyas
+ * fechas antiguas estirarían la barra del eje y darían por vivo lo que no lo está.
+ *
+ *   37 — "Propuestas Sectorial - Eje2 L1, L3 y L4": 7 propuestas 2024-2025 que
+ *        no figuran en los informes sectoriales de ago-2026. Los 11 proyectos
+ *        vigentes viven en el grupo 40 "Sectorial 2026".
+ */
+const GRUPOS_SIN_LINEA_DE_TIEMPO = [37];
+
 export async function getTimelineData(especialistaId?: number) {
   try {
     const conditions: string[] = [];
@@ -437,13 +469,17 @@ export async function getTimelineData(especialistaId?: number) {
     // Filtro seguro en memoria para evitar colapso del inner join
     const proyectosValidos = rows.filter((p: any) => {
       const desc = p.etapa_descripcion?.toLowerCase() || '';
-      return !desc.includes('no habilitada');
+      if (desc.includes('no habilitada')) return false;
+      // Los grupos que solo guardan historia (propuestas que no prosperaron) no
+      // dibujan barra: sus fechas distorsionarían la cascada del eje. Siguen
+      // contando en los KPI y en la tabla, y reaparecen quitándolos de aquí.
+      return !GRUPOS_SIN_LINEA_DE_TIEMPO.includes(Number(p.grupo_id));
     });
 
     return proyectosValidos.map((p: any) => ({
       id: p.id,
       nombre: p.nombre,
-      estado: p.etapa_descripcion || 'Activo',
+      estado: etiquetaEtapa(p.etapa_id, p.eje_id, p.etapa_descripcion) || 'Activo',
       grupo_id: p.grupo_id,
       grupo_descripcion: p.grupo_descripcion || 'Sin Grupo',
       grupo_orden: p.grupo_orden || 999,
@@ -458,16 +494,25 @@ export async function getTimelineData(especialistaId?: number) {
       avance: Number(p.avance) || 0,
       institucion: p.institucion_nombre || '-',
       region: p.region_descripcion || '-',
-      etapa: p.etapa_descripcion || 'Sin Etapa',
-      fase: p.etapa_fase || '',
+      etapa: etiquetaEtapa(p.etapa_id, p.eje_id, p.etapa_descripcion) || 'Sin Etapa',
+      // El id crudo, para colorear la etiqueta de estado sin depender del rótulo
+      // (que cambia según el eje, ver src/config/etapas.ts).
+      etapa_id: p.etapa_id,
+      fase: etiquetaFase(p.etapa_id, p.eje_id, p.etapa_fase),
       avance_tecnico: Number(p.avance_tecnico) || 0,
-      fecha_inicio: p.avances?.find((a: any) => a.etapa_id === 1)?.fecha || null,
+      fecha_inicio: primeraFechaAvance(p.avances),
       fecha_fin: p.avances?.find((a: any) => a.etapa_id === 6)?.fecha || null,
+      // OJO: este mapeo reconstruye el avance campo por campo, así que toda
+      // columna nueva hay que agregarla ACÁ además de en el json_build_object de
+      // PROYECTO_BASE_SELECT o se pierde en silencio. `informe_impacto_id` lo
+      // necesita la línea de tiempo para saber qué informes de impacto
+      // corresponden a los proyectos visibles.
       avances: (p.avances || []).map((a: any) => ({
         id: a.id,
         fecha: a.fecha,
         etapa_id: a.etapa_id,
-        sustento: a.sustento || ''
+        sustento: a.sustento || '',
+        informe_impacto_id: a.informe_impacto_id ?? null
       })),
       provincia: p.provincia || '',
       especialista_id: p.especialista_id,
@@ -610,12 +655,19 @@ export async function createProyecto(formData: any) {
 
 export async function updateProyecto(id: any, formData: any) {
   const userId = await getAuditUserId();
-  const cols = Object.keys(formData);
-  const values = cols.map((c) => formData[c]);
+  // `avance` es un campo derivado: se calcula sumando los pagos de la bitácora
+  // (recalculateProyectoAvance). Editarlo a mano volvería a desincronizar el acumulado.
+  const { avance: _avance, ...payload } = formData || {};
+  const cols = Object.keys(payload);
+  const values = cols.map((c) => payload[c]);
   const assignments = cols.map((c, i) => `${colName(c)} = $${i + 1}`);
 
   try {
     const rows = await withAuditUser(userId, async (client) => {
+      if (cols.length === 0) {
+        const result = await client.query('select * from proyectos where id = $1::int', [id]);
+        return result.rows;
+      }
       const result = await client.query(
         `update proyectos set ${assignments.join(', ')} where id = $${cols.length + 1}::int returning *`,
         [...values, id],
@@ -704,8 +756,13 @@ async function recalculateProyectoAvance(proyectoId: any, client: { query: (text
     const latestAvance = allAvances[0];
     const newEtapaId = latestAvance.etapa_id;
 
-    // 3. Asigna como sustento el texto del avance más reciente. Si está vacío, busca hacia atrás.
-    const sustentoFinal = allAvances.find((av: any) => av.sustento && av.sustento.trim() !== '')?.sustento || '';
+    // 3. Sustento narrativo del proyecto: el del evento más reciente que NO sea un pago.
+    //    Los pagos ("OP 138-UPS-AS - S/ ...") y el arrastre no describen la etapa; si
+    //    solo hubiera pagos con texto, se usa el más reciente de ellos.
+    const conTexto = (av: any) => av.sustento && av.sustento.trim() !== '';
+    const sustentoFinal =
+      allAvances.find((av: any) => conTexto(av) && !esPago(av) && !esArrastre(av))?.sustento ||
+      allAvances.find(conTexto)?.sustento || '';
 
     // Calculamos el avance financiero total (solo de avances reales <= hoy)
     const totalAvanceFinanciero = allAvances.reduce((sum: number, item: any) => sum + (Number(item.monto) || 0), 0);
@@ -721,12 +778,43 @@ async function recalculateProyectoAvance(proyectoId: any, client: { query: (text
   }
 }
 
+/**
+ * Recalcula etapa/sustento/avance derivados de la bitácora para varios
+ * proyectos a la vez. Lo usa la sincronización de informes de impacto
+ * (módulo Catálogos), que escribe eventos de etapa Impacto directamente en
+ * avance_proyecto sin pasar por addAvanceProyecto.
+ */
+export async function recalcularEtapasProyectos(proyectoIds: number[]) {
+  const ids = Array.from(new Set((proyectoIds || []).filter((id) => id != null)));
+  if (ids.length === 0) return;
+
+  const userId = await getAuditUserId();
+  await withAuditUser(userId, async (client) => {
+    for (const id of ids) {
+      await recalculateProyectoAvance(id, client);
+    }
+  });
+  revalidatePath('/dashboard');
+}
+
+/**
+ * Registra un evento en la bitácora del proyecto. Si trae `monto`, es un PAGO PARCIAL
+ * (la orden de pago va al inicio del sustento: "OP 138-UPS-AS - S/ 903.40").
+ *
+ * `descontarDeArrastre`: el pago ya estaba incluido en el acumulado migrado
+ * (evento "Arrastre:"); se registra igual para dejarlo trazable, pero el arrastre
+ * baja en el mismo monto y el avance total del proyecto no cambia.
+ */
 export async function addAvanceProyecto(proyectoId: any, avanceData: any) {
   const userId = await getAuditUserId();
-  const payload = { ...avanceData, proyecto_id: proyectoId, monto: Number(avanceData.monto) || 0 };
+  // `descontarDeArrastre` es una instrucción, no una columna: no se inserta.
+  const { descontarDeArrastre: descontar, ...fila } = avanceData || {};
+  const monto = Number(fila.monto) || 0;
+  const payload = { ...fila, proyecto_id: proyectoId, monto };
   const cols = Object.keys(payload);
   const values = cols.map((c) => (payload as any)[c]);
   const placeholders = cols.map((_, i) => `$${i + 1}`);
+  const debeDescontar = !!descontar && monto > 0;
 
   try {
     const data = await withAuditUser(userId, async (client) => {
@@ -735,9 +823,17 @@ export async function addAvanceProyecto(proyectoId: any, avanceData: any) {
         values,
       );
       const inserted = result.rows[0];
-      await recalculateProyectoAvance(proyectoId, client);
+      // Sin arrastre que descontar, el recálculo va en la misma transacción.
+      if (!debeDescontar) await recalculateProyectoAvance(proyectoId, client);
       return inserted;
     });
+
+    if (debeDescontar) {
+      // descontarDeArrastre usa su propia conexión: se corre con el insert ya
+      // confirmado y el recálculo va después, para que vea el arrastre rebajado.
+      await descontarDeArrastre({ tabla: 'avance_proyecto', fk: 'proyecto_id', padreId: proyectoId, monto });
+      await withAuditUser(userId, (client) => recalculateProyectoAvance(proyectoId, client));
+    }
 
     revalidatePath('/dashboard/gestion-proyectos');
     return data;
@@ -749,7 +845,9 @@ export async function addAvanceProyecto(proyectoId: any, avanceData: any) {
 
 export async function updateAvanceProyecto(id: any, avanceData: any) {
   const userId = await getAuditUserId();
-  const payload = { ...avanceData, monto: Number(avanceData.monto) || 0 };
+  // `descontarDeArrastre` solo aplica al alta; en la edición se ignora.
+  const { descontarDeArrastre: _ignorar, ...fila } = avanceData || {};
+  const payload = { ...fila, monto: Number(fila.monto) || 0 };
   const cols = Object.keys(payload);
   const values = cols.map((c) => (payload as any)[c]);
   const assignments = cols.map((c, i) => `${colName(c)} = $${i + 1}`);

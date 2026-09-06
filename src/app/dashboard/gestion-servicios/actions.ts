@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { query } from "@/lib/db";
+import { descontarDeArrastre } from "@/lib/arrastre-server";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Capa de datos: Postgres directo. Los embeds de PostgREST (eje:eje_id(...),
@@ -85,7 +86,7 @@ function cleanBecaPayload(formData: any) {
     'condicion_id',
     'grupo_id',
     'presupuesto',
-    'avance',
+    // 'avance' NO: es derivado, lo calcula recalculateBecaAvance sumando los pagos de la bitácora
     'beneficiarios',
     'provincia_procedencia',
     'distrito_procedencia',
@@ -206,18 +207,48 @@ async function recalculateBecaAvance(becaId: any) {
   }
 }
 
+/**
+ * Recalcula etapa/avance derivados de la bitácora para varias becas a la vez.
+ * Lo usa la sincronización de informes de impacto (módulo Catálogos), que
+ * escribe eventos de etapa Impacto directamente en avance_beca sin pasar por
+ * addAvanceServicio.
+ */
+export async function recalcularEtapasBecas(becaIds: number[]) {
+  const ids = Array.from(new Set((becaIds || []).filter((id) => id != null)));
+  if (ids.length === 0) return;
+
+  for (const id of ids) {
+    await recalculateBecaAvance(id);
+  }
+  revalidatePath('/dashboard/servicios');
+  revalidatePath('/dashboard/gestion-servicios');
+}
+
+/**
+ * Registra un evento en la bitácora de la beca. Si trae `monto`, es un PAGO PARCIAL
+ * (la orden de pago va al inicio del sustento: "OP 138-UPS-AS - S/ 903.40").
+ *
+ * `descontarDeArrastre`: el pago ya estaba incluido en el acumulado migrado
+ * (evento "Arrastre:"); se registra igual para dejarlo trazable, pero el arrastre
+ * baja en el mismo monto y el avance total de la beca no cambia.
+ */
 export async function addAvanceServicio(becaId: any, avanceData: any) {
+  const monto = Number(avanceData.monto) || 0;
   let data: any;
   try {
     const { rows } = await query(
       `insert into avance_beca (beca_id, etapa_id, fecha, sustento, monto)
        values ($1::int, $2, $3, $4, $5) returning *`,
-      [becaId, avanceData.etapa_id, avanceData.fecha, avanceData.sustento, Number(avanceData.monto) || 0],
+      [becaId, avanceData.etapa_id, avanceData.fecha, avanceData.sustento, monto],
     );
     data = rows[0];
   } catch (err: any) {
     console.error("Error inserting avance:", err);
     throw new Error(err.message);
+  }
+
+  if (avanceData.descontarDeArrastre && monto > 0) {
+    await descontarDeArrastre({ tabla: 'avance_beca', fk: 'beca_id', padreId: becaId, monto });
   }
 
   // El avance económico de becas_nueva se recalcula como la suma de todos los montos del historial.

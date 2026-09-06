@@ -94,6 +94,43 @@ scripts/
   `documentos_gerenciales.id` son uuid.
 - `dynamic = 'force-dynamic'` en páginas que dependen de filtros frescos.
 
+## Pagos trazables (proyectos y becas/servicios)
+
+Porteado del original el 2026-09-06 (commit 7f22fc6 de sistema-activa-t).
+
+Los pagos se registran en la bitácora (`avance_proyecto` / `avance_beca`) como
+eventos con su monto **parcial**; `proyectos.avance` y `becas_nueva.avance` son
+campos **derivados** (suma de la bitácora con fecha <= hoy, ver
+`recalculateProyectoAvance` / `recalculateBecaAvance`). Los formularios no
+permiten editarlos y los server actions descartan `avance` del payload.
+
+Convenciones (helpers en `src/lib/pagos.ts`, sin columnas nuevas):
+
+- **Orden de pago al inicio del sustento**: `OP 138-UPS-AS - S/ 903.40`. Es la
+  clave de trazabilidad y lo que evita registrar dos veces la misma OP.
+- **Arrastre**: evento con sustento que empieza con `Arrastre:`. Concentra el
+  acumulado pagado antes de la trazabilidad. Los datos llegan ya migrados desde
+  el dump de Supabase (el script `migra_pagos_arrastre.cjs` corre en el original).
+- **Desglosar el arrastre**: al registrar una OP ya incluida en el acumulado,
+  marcar `descontarDeArrastre` (casilla en el modal); el arrastre baja en el
+  mismo monto (`src/lib/arrastre-server.ts`) y el avance total no cambia.
+- El sustento narrativo de `proyectos.sustento` lo define el último evento que
+  **no** sea un pago ni arrastre.
+
+## Sincronizar con el original (sistema-activa-t)
+
+- El original está como remote `activa` en este repo (`git fetch activa main`).
+  El último commit porteado se anota en el mensaje del commit de porteo.
+- Componentes cliente y `src/config/*`, `src/lib/pagos.ts` se copian tal cual.
+  Los `actions.ts` se mergean a 3 vías (`git merge-file`) y se traduce
+  supabase-js a `query()` de `src/lib/db.ts`.
+- Módulos que NO se portan (se desactivan): monitores, evaluación,
+  supervisión/campo y sus tablas (`monitores`, `plan_supervision`,
+  `supervisiones_registro`, `evaluacion_config`, `evaluaciones_resultados`).
+- Cambios de esquema del original van a `scripts/schema.sql` y a un
+  `scripts/migration_*.sql` idempotente que `actualizar_bd_servidor.sh` aplica
+  antes de restaurar el dump (paso 2b).
+
 ## Deuda técnica conocida
 
 - [ ] Registros antiguos de documentos apuntan al Storage de Supabase remoto;

@@ -7,6 +7,7 @@ import {
     updateAvanceServicio, 
     deleteAvanceServicio 
 } from "@/app/dashboard/gestion-servicios/actions";
+import { acumuladosPorEvento, arrastreVigente, esArrastre, extraerOrdenPago } from "@/lib/pagos";
 
 interface ServicioModalProps {
     isOpen: boolean;
@@ -79,7 +80,8 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
         etapa_id: "",
         fecha: new Date().toISOString().split('T')[0],
         sustento: "",
-        monto: 0
+        monto: 0,
+        descontarDeArrastre: false
     });
 
     const [isMontoAvanceFocused, setIsMontoAvanceFocused] = useState(false);
@@ -233,7 +235,8 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                 etapa_id: "",
                 fecha: new Date().toISOString().split('T')[0],
                 sustento: "",
-                monto: 0
+                monto: 0,
+                descontarDeArrastre: false
             });
             onDataChange?.(); // refresca la tabla con el avance total recalculado
             onClose();
@@ -743,7 +746,7 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                                                 />
                                             </div>
                                             <div className="space-y-1">
-                                                <label className="text-[10px] font-bold text-gray-400 uppercase">Monto de Avance (S/.)</label>
+                                                <label className="text-[10px] font-bold text-gray-400 uppercase">Pago parcial (S/.)</label>
                                                 <input
                                                     type="text"
                                                     value={isMontoAvanceFocused ? (newAvance.monto ?? "") : formatCurrency(newAvance.monto)}
@@ -763,9 +766,24 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                                                     value={newAvance.sustento || ""}
                                                     onChange={(e) => setNewAvance({...newAvance, sustento: e.target.value})}
                                                     className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none"
-                                                    placeholder="Ej: Informe mensual aprobado"
+                                                    placeholder="Si es un pago, empiece con la orden de pago. Ej: OP 138-UPS-AS - S/ 903.40"
                                                 />
                                             </div>
+
+                                            {arrastreVigente(servicio?.avances) && Number(newAvance.monto) > 0 && (
+                                                <label className="md:col-span-2 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg cursor-pointer">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={newAvance.descontarDeArrastre}
+                                                        onChange={(e) => setNewAvance({...newAvance, descontarDeArrastre: e.target.checked})}
+                                                        className="mt-0.5"
+                                                    />
+                                                    <span className="text-[11px] text-amber-800 leading-snug">
+                                                        <b>Este pago ya está incluido en el arrastre</b> ({formatCurrency(arrastreVigente(servicio?.avances)?.monto ?? 0)}).
+                                                        Se registra para dejarlo trazable y el arrastre baja en el mismo monto; el avance total no cambia.
+                                                    </span>
+                                                </label>
+                                            )}
                                         </div>
                                         <button
                                             onClick={handleAddAvance}
@@ -788,8 +806,10 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                                 <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Historial de Avances</label>
                                 <div className="space-y-2">
                                     {servicio?.avances && servicio.avances.length > 0 ? (
-                                        [...servicio.avances].sort((a, b) => (new Date(b.fecha) as any) - (new Date(a.fecha) as any)).map((av: any, idx: number) => (
-                                            <div key={av.id || idx} className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-xl shadow-sm hover:border-blue-200 transition-colors">
+                                        (() => {
+                                            const acumulados = acumuladosPorEvento(servicio.avances);
+                                            return [...servicio.avances].sort((a, b) => (new Date(b.fecha) as any) - (new Date(a.fecha) as any)).map((av: any, idx: number) => (
+                                            <div key={av.id || idx} className={`flex items-center justify-between p-3 bg-white border rounded-xl shadow-sm hover:border-blue-200 transition-colors ${esArrastre(av) ? 'border-amber-200 bg-amber-50/40' : 'border-gray-100'}`}>
                                                 <div className="flex flex-col flex-1">
                                                     <span className="text-[10px] font-black text-blue-600">
                                                         {(() => {
@@ -799,14 +819,21 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                                                         })()}
                                                     </span>
                                                     <span className="text-xs font-bold text-gray-800">{options.etapas.find(o => Number(o.value) === Number(av.etapa_id))?.label || `Etapa ${av.etapa_id}`}</span>
-                                                    <div className="flex items-center gap-3 mt-0.5">
-                                                        <p className="text-[9px] text-gray-400 italic">{av.sustento || '-'}</p>
-                                                        {av.monto > 0 && (
-                                                            <span className="text-[9px] font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
-                                                                {formatCurrency(av.monto)}
-                                                            </span>
-                                                        )}
-                                                    </div>
+                                                    {(Number(av.monto) > 0 || esArrastre(av)) && (
+                                                        <div className="flex flex-wrap items-center gap-2 mt-1 text-[10px]">
+                                                            {esArrastre(av) ? (
+                                                                <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-black uppercase tracking-wide">Arrastre{Number(av.monto) > 0 ? '' : ' desglosado'}</span>
+                                                            ) : (
+                                                                <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-black uppercase tracking-wide">Pago</span>
+                                                            )}
+                                                            {extraerOrdenPago(av.sustento) && (
+                                                                <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">{extraerOrdenPago(av.sustento)}</span>
+                                                            )}
+                                                            <span className="text-gray-500">Parcial <b className="text-gray-800">{formatCurrency(av.monto)}</b></span>
+                                                            <span className="text-gray-500">Acumulado <b className="text-blue-700">{formatCurrency(acumulados.get(av.id) ?? 0)}</b></span>
+                                                        </div>
+                                                    )}
+                                                    <p className="text-[9px] text-gray-400 italic mt-0.5">{av.sustento || '-'}</p>
                                                 </div>
                                                 {!isReadOnly && (
                                                     <div className="flex items-center gap-1 border-l pl-3 border-gray-100">
@@ -827,7 +854,8 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                                                     </div>
                                                 )}
                                             </div>
-                                        ))
+                                            ));
+                                        })()
                                     ) : (
                                         <p className="text-xs text-gray-400 italic text-center py-4 bg-gray-50 rounded-xl">No hay avances registrados aún.</p>
                                     )}
@@ -867,7 +895,7 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                                     />
                                 </div>
                                 <div className="space-y-1">
-                                    <label className="text-[10px] font-bold text-gray-400 uppercase">Monto de Avance (S/.)</label>
+                                    <label className="text-[10px] font-bold text-gray-400 uppercase">Pago parcial (S/.)</label>
                                     <input
                                         type="text"
                                         value={isMontoEditFocused ? (editingAvance.monto ?? "") : formatCurrency(editingAvance.monto)}

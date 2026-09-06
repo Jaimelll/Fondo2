@@ -47,7 +47,8 @@ export async function getServiciosPageData() {
         left join lateral (
           select json_agg(json_build_object(
             'id', a.id, 'fecha', a.fecha::text, 'etapa_id', a.etapa_id,
-            'sustento', a.sustento, 'monto', a.monto
+            'sustento', a.sustento, 'monto', a.monto,
+            'informe_impacto_id', a.informe_impacto_id
           ) order by a.id) as avances
           from avance_beca a
           where a.beca_id = b.id

@@ -3,6 +3,8 @@
 import { unstable_noStore as noStore, revalidatePath } from 'next/cache';
 import { query } from '@/lib/db';
 
+import { sectorAgrupado } from '@/config/sectoresAgrupados';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Capa de datos: Postgres directo. Los embeds de PostgREST (sectores_ciiu
 // to-one, aportes to-many con !inner opcional) se replican con LEFT JOIN +
@@ -55,15 +57,21 @@ export async function getEmpresasData(anioFiltro: string | number = 'Todos') {
         return [];
     }
 
-    return rows.map((e: any) => ({
-        ruc: e.ruc,
-        razon_social: e.razon_social,
-        ciiu_id: e.ciiu_id,
-        sector: e.sectores_ciiu?.seccion_desc || 'Desconocido',
-        total_aportes: e.aportes?.reduce((sum: number, a: any) => sum + Number(a.monto), 0) || 0,
-        aportes_count: e.aportes?.length || 0,
-        aportes: (e.aportes || []).sort((a: any, b: any) => b.anio - a.anio)
-    }));
+    return rows.map((e: any) => {
+        const ciiuCodigo = e.sectores_ciiu?.ciiu_codigo?.trim() || '';
+        const seccionDesc = e.sectores_ciiu?.seccion_desc || 'Desconocido';
+        return {
+            ruc: e.ruc,
+            razon_social: e.razon_social,
+            ciiu_id: e.ciiu_id,
+            sector: seccionDesc,
+            ciiu_codigo: ciiuCodigo,
+            sector_grupo: sectorAgrupado(ciiuCodigo, seccionDesc),
+            total_aportes: e.aportes?.reduce((sum: number, a: any) => sum + Number(a.monto), 0) || 0,
+            aportes_count: e.aportes?.length || 0,
+            aportes: (e.aportes || []).sort((a: any, b: any) => b.anio - a.anio)
+        };
+    });
 }
 
 export async function getAllSectores() {

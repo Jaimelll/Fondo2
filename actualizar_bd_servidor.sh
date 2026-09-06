@@ -35,6 +35,14 @@ done
 [[ ${#OBJ[@]} -gt 0 ]] || { echo "El dump no contiene tablas de negocio"; exit 1; }
 echo "   Tablas a refrescar: ${#OBJ[@]} de ${#TABLAS[@]}"
 
+# Las migraciones de esquema porteadas del original son idempotentes; se aplican
+# antes de restaurar para que el COPY no falle por columnas que el dump ya trae
+# (p. ej. avance_*.informe_impacto_id, que dejo vacias las tablas de avances).
+echo "2b/6 Aplicando migraciones de esquema pendientes..."
+for m in scripts/migration_impacto_avance.sql; do
+  [[ -f "$m" ]] && docker compose exec -T db psql -U fondo2 -d fondo2 -v ON_ERROR_STOP=1 -q < "$m"
+done
+
 echo "3/6 Reemplazando datos..."
 LISTA=$(printf '"%s", ' "${OBJ[@]}"); LISTA=${LISTA%, }
 docker compose exec -T db psql -U fondo2 -d fondo2 -v ON_ERROR_STOP=1 -c "TRUNCATE TABLE $LISTA CASCADE;"

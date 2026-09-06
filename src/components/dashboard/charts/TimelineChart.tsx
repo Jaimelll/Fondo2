@@ -4,6 +4,7 @@ import { useMemo, useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, ReferenceLine, ReferenceDot, Cell } from 'recharts';
 import { FileText } from 'lucide-react';
 import ProyectoModal from '@/components/ProyectoModal';
+import { etiquetaEtapaParaEjes } from '@/config/etapas';
 import { getProyectoCompletoById } from '@/app/dashboard/actions';
 
 interface TimelineChartProps {
@@ -49,19 +50,27 @@ export function TimelineChart({ data, options = {}, informesImpacto = [] }: Time
 
     // Obtener etapas del catálogo o usar por defecto si no hay
     const allStages = useMemo(() => {
-        if (options.etapas && Array.from(options.etapas).length > 0) {
-            return [...options.etapas].sort((a: any, b: any) => Number(a.value) - Number(b.value));
-        }
-        // Fallback histórico para evitar roturas
-        return [
-            { value: 1, label: 'Bases' },
-            { value: 2, label: 'Lanzamiento' },
-            { value: 3, label: 'Aprobado' },
-            { value: 4, label: 'Firma' },
-            { value: 5, label: 'Ejecución' },
-            { value: 6, label: 'Ejecutado' },
-        ];
-    }, [options.etapas]);
+        const base = (options.etapas && Array.from(options.etapas).length > 0)
+            ? [...options.etapas].sort((a: any, b: any) => Number(a.value) - Number(b.value))
+            // Fallback histórico para evitar roturas
+            : [
+                { value: 1, label: 'Bases' },
+                { value: 2, label: 'Lanzamiento' },
+                { value: 3, label: 'Aprobado' },
+                { value: 4, label: 'Firma' },
+                { value: 5, label: 'Ejecución' },
+                { value: 6, label: 'Ejecutado' },
+            ];
+
+        // El catálogo no sabe de ejes, así que la leyenda se rotula con los ejes
+        // que hay en pantalla: "Lanzamiento" si son concursales, "Por aprobar"
+        // si no lo son, y los dos nombres si conviven (ver src/config/etapas.ts).
+        const ejesEnPantalla = Array.from(new Set((data || []).map((p: any) => p.eje_id)));
+        return base.map((s: any) => ({
+            ...s,
+            label: etiquetaEtapaParaEjes(s.value, ejesEnPantalla, s.label),
+        }));
+    }, [options.etapas, data]);
 
     useEffect(() => {
         const checkMobile = () => setIsMobile(window.innerWidth < 768);
@@ -163,7 +172,8 @@ export function TimelineChart({ data, options = {}, informesImpacto = [] }: Time
                 avance_tecnico: project.avance_tecnico || 0,
                 fecha_inicio: project.fecha_inicio || null,
                 fecha_fin: project.fecha_fin || null,
-                etapa: project.etapa || project.estado || '-'
+                etapa: project.etapa || project.estado || '-',
+                etapaId: project.etapa_id ?? null,
             });
 
             project.avances.forEach((a: any) => {
@@ -315,6 +325,20 @@ export function TimelineChart({ data, options = {}, informesImpacto = [] }: Time
     };
 
     const formatYAxis = (name: string) => name;
+
+    /**
+     * Color de una etapa, el mismo que pinta su segmento en la barra
+     * (STAGE_PALETTE va indexada por id de etapa). Se resuelve por id y no por
+     * el rótulo, porque el rótulo cambia según el eje del proyecto.
+     */
+    const colorEtapa = (etapaId?: number | null, descripcion?: string) => {
+        if (etapaId != null && STAGE_PALETTE[Number(etapaId) - 1]) {
+            return STAGE_PALETTE[Number(etapaId) - 1];
+        }
+        const buscada = String(descripcion || '').trim().toLowerCase();
+        const etapa = allStages.find((s: any) => String(s.label).trim().toLowerCase() === buscada);
+        return (etapa && STAGE_PALETTE[Number(etapa.value) - 1]) || '#64748b';
+    };
 
     const SimpleTooltip = ({ active, payload }: any) => {
         if (active && payload && payload.length) {
@@ -541,7 +565,13 @@ export function TimelineChart({ data, options = {}, informesImpacto = [] }: Time
                         </div>
                         <div className="flex-1 text-right">
                             <span className="text-xs font-semibold uppercase text-gray-500 block">Resumen</span>
-                            <span className="text-sm font-bold text-blue-700">{selectedGroup.count} proyectos encontrados</span>
+                            {/* `projects` ya viene filtrado por los filtros del tablero, así que
+                                su largo es la cantidad realmente visible en la tabla de abajo.
+                                Antes se leía `count`, que no existe en el objeto del grupo. */}
+                            <span className="text-sm font-bold text-blue-700">
+                                {selectedGroup.projects.length}{' '}
+                                {selectedGroup.projects.length === 1 ? 'proyecto encontrado' : 'proyectos encontrados'}
+                            </span>
                         </div>
                     </div>
                     {selectedGroup.informes && selectedGroup.informes.length > 0 && (
@@ -593,6 +623,7 @@ export function TimelineChart({ data, options = {}, informesImpacto = [] }: Time
                                     <th className="text-left py-3 px-4 font-bold text-gray-700">Código</th>
                                     <th className="text-left py-3 px-4 font-bold text-gray-700">Institución Ejecutora</th>
                                     <th className="text-left py-3 px-4 font-bold text-gray-700">Región</th>
+                                    <th className="text-left py-3 px-4 font-bold text-gray-700">Estado</th>
                                     <th className="text-right py-3 px-4 font-bold text-gray-700">Presupuesto</th>
                                     <th className="text-right py-3 px-4 font-bold text-gray-700">Avance</th>
                                     <th className="text-right py-3 px-4 font-bold text-gray-700">%</th>
@@ -649,6 +680,19 @@ export function TimelineChart({ data, options = {}, informesImpacto = [] }: Time
                                                 <td className="py-3 px-4 text-gray-600" style={{ minWidth: '200px', whiteSpace: 'normal', wordBreak: 'break-word' }}>{p.institucion}</td>
                                                 <td className="py-3 px-4 text-gray-600 whitespace-nowrap">
                                                     {p.region || '-'}
+                                                </td>
+                                                {/* La cabecera dice "Múltiples etapas" cuando el grupo mezcla estados;
+                                                    esta columna es la que dice cuál le toca a cada proyecto. */}
+                                                <td className="py-3 px-4 whitespace-nowrap">
+                                                    <span
+                                                        className="inline-block rounded-full px-2.5 py-1 text-xs font-bold"
+                                                        style={{
+                                                            backgroundColor: `${colorEtapa(p.etapaId, p.etapa)}1f`,
+                                                            color: colorEtapa(p.etapaId, p.etapa),
+                                                        }}
+                                                    >
+                                                        {p.etapa || 'No definida'}
+                                                    </span>
                                                 </td>
                                                 <td className="py-3 px-4 text-right text-blue-700 font-semibold whitespace-nowrap">S/ {presupuestado.toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
                                                 <td className="py-3 px-4 text-right text-emerald-700 font-semibold whitespace-nowrap">S/ {avance.toLocaleString('es-PE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</td>
