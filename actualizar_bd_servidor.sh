@@ -58,6 +58,11 @@ docker compose exec -T db psql -U fondo2 -d fondo2 -v ON_ERROR_STOP=1 < scripts/
 echo "5/6 Reapuntando URLs de PDFs al storage local..."
 docker compose exec -T db psql -U fondo2 -d fondo2 -v ON_ERROR_STOP=1 < scripts/reescribir_urls_locales.sql
 
+# Supabase trae empresas y sectores_ciiu con los CIIU sin corregir; se vuelven
+# a aplicar las correcciones que alimentan los grupos de aportantes.
+echo "5b/6 Reaplicando correcciones de CIIU de aportantes..."
+docker compose exec -T db psql -U fondo2 -d fondo2 -v ON_ERROR_STOP=1 -q < scripts/corrige_ciiu_aportantes.sql
+
 echo "6/6 Resumen:"
 docker compose exec -T db psql -U fondo2 -d fondo2 -c "ANALYZE;" >/dev/null
 docker compose exec -T db psql -U fondo2 -d fondo2 -c "SELECT relname AS tabla, n_live_tup AS filas FROM pg_stat_user_tables WHERE schemaname='public' ORDER BY relname;"

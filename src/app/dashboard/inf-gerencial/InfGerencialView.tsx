@@ -37,7 +37,7 @@ interface UnidadOperativa {
 }
 
 // Etiquetas del eje de "Distribución por Sector": los nombres de los
-// macro-sectores ("Infraestructuras de transporte") no caben en una línea,
+// macro-sectores ("Infraestructura y transporte") no caben en una línea,
 // así que se parten en renglones de ~16 caracteres.
 function wrapLabel(text: string, maxChars = 16): string[] {
     const lines: string[] = [];

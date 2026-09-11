@@ -6,18 +6,23 @@
 // Informe Gerencial.
 //
 // La clasificación se hace por el CÓDIGO CIIU (rev. 4), no por la descripción
-// de la sección: el código es el dato confiable y en la tabla hay filas con la
-// sección mal escrita (p. ej. 7020 "consultoría de gestión" está guardado como
-// "Industria manufacturera" y 4630 "venta al por mayor de alimentos" como
-// "Alimentos, bebidas y tabaco"). La descripción se usa solo como respaldo
-// cuando la empresa no tiene código.
+// de la sección: el código es el dato confiable y la tabla ha tenido filas con
+// la sección mal escrita (p. ej. 7020 "consultoría de gestión" guardado como
+// "Industria manufacturera"). La descripción se usa solo como respaldo cuando
+// la empresa no tiene código.
+//
+// Por eso el grupo es tan bueno como el CIIU de cada empresa. Los CIIU
+// equivocados que se detectaron contrastando con SUNAT (Minsur y Boroo como
+// generadoras eléctricas, Summa Gold como comercio, etc.) se corrigen en
+// `scripts/corrige_ciiu_aportantes.sql`, que se reaplica tras cada carga desde
+// Supabase.
 
 export const SECTORES_AGRUPADOS = [
     'Minería y petróleo',
     'Energía',
     'Industria',
     'Comercial',
-    'Infraestructuras de transporte',
+    'Infraestructura y transporte',
     'Otros',
 ] as const;
 
@@ -36,12 +41,14 @@ function grupoPorDivision(division: number): SectorAgrupado | null {
     if (division >= 10 && division <= 33) return 'Industria';
     // Sección G — Comercio al por mayor y al por menor
     if (division >= 45 && division <= 47) return 'Comercial';
-    // 42/43 — Obras de ingeniería civil y actividades especializadas de
-    // construcción: son las concesionarias y consorcios viales (IIRSA Norte,
-    // Concesión Vial del Sur, Concay). La división 41 (edificios) queda en Otros.
-    if (division === 42 || division === 43) return 'Infraestructuras de transporte';
-    // Sección H — Transporte y almacenamiento
-    if (division >= 49 && division <= 53) return 'Infraestructuras de transporte';
+    // Sección F — Construcción (41 edificios, 42 obras de ingeniería civil,
+    // 43 actividades especializadas): concesionarias y consorcios viales (IIRSA
+    // Norte, Concesión Vial del Sur, Concay) y constructoras (Técnicas Reunidas
+    // de Talara, CyM).
+    if (division >= 41 && division <= 43) return 'Infraestructura y transporte';
+    // Sección H — Transporte y almacenamiento. Incluye el transporte por
+    // ductos (4930, TGP): se respeta el CIIU de SUNAT.
+    if (division >= 49 && division <= 53) return 'Infraestructura y transporte';
     return null;
 }
 
@@ -51,7 +58,7 @@ const RESPALDO_POR_DESCRIPCION: [RegExp, SectorAgrupado][] = [
     [/electricidad|gas, vapor/i, 'Energía'],
     [/industria/i, 'Industria'],
     [/comercio/i, 'Comercial'],
-    [/transporte|almacenamiento/i, 'Infraestructuras de transporte'],
+    [/transporte|almacenamiento|construcci[oó]n/i, 'Infraestructura y transporte'],
 ];
 
 /**
