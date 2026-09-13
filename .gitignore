@@ -79,3 +79,6 @@ inventario_pdfs_*.csv
 /backups/
 respaldo_supabase_*/
 prueba_archivo/
+
+servidor_*.tar
+supabase_export_*/
