@@ -1,7 +1,7 @@
 -- Corrige el CIIU de empresas aportantes y normaliza el catálogo sectores_ciiu.
 --
 -- El grupo de cada aportante ("Minería y petróleo", "Energía", "Industria",
--- "Comercial", "Infraestructura y transporte", "Otros") se calcula a partir del
+-- "Comercial", "Transporte y almacenamiento", "Otros") se calcula a partir del
 -- CIIU de la empresa (src/config/sectoresAgrupados.ts). Varias empresas tenían
 -- un CIIU que no corresponde a su actividad: se contrastaron con la actividad
 -- registrada en SUNAT y con información pública de cada empresa (11/09/2026).

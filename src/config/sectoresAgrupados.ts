@@ -22,7 +22,7 @@ export const SECTORES_AGRUPADOS = [
     'Energía',
     'Industria',
     'Comercial',
-    'Infraestructura y transporte',
+    'Transporte y almacenamiento',
     'Otros',
 ] as const;
 
@@ -41,14 +41,13 @@ function grupoPorDivision(division: number): SectorAgrupado | null {
     if (division >= 10 && division <= 33) return 'Industria';
     // Sección G — Comercio al por mayor y al por menor
     if (division >= 45 && division <= 47) return 'Comercial';
-    // Sección F — Construcción (41 edificios, 42 obras de ingeniería civil,
-    // 43 actividades especializadas): concesionarias y consorcios viales (IIRSA
-    // Norte, Concesión Vial del Sur, Concay) y constructoras (Técnicas Reunidas
-    // de Talara, CyM).
-    if (division >= 41 && division <= 43) return 'Infraestructura y transporte';
     // Sección H — Transporte y almacenamiento. Incluye el transporte por
     // ductos (4930, TGP): se respeta el CIIU de SUNAT.
-    if (division >= 49 && division <= 53) return 'Infraestructura y transporte';
+    if (division >= 49 && division <= 53) return 'Transporte y almacenamiento';
+    // Sección F — Construcción (41-43) ya no tiene grupo propio desde el
+    // 14/09/2026: el grupo se llamaba "Infraestructura y transporte" y pasó a
+    // "Transporte y almacenamiento", así que las constructoras (Técnicas
+    // Reunidas de Talara, CyM, consorcios viales) caen en "Otros".
     return null;
 }
 
@@ -58,7 +57,7 @@ const RESPALDO_POR_DESCRIPCION: [RegExp, SectorAgrupado][] = [
     [/electricidad|gas, vapor/i, 'Energía'],
     [/industria/i, 'Industria'],
     [/comercio/i, 'Comercial'],
-    [/transporte|almacenamiento|construcci[oó]n/i, 'Infraestructura y transporte'],
+    [/transporte|almacenamiento/i, 'Transporte y almacenamiento'],
 ];
 
 /**
