@@ -41,14 +41,12 @@ const MARGIN_DAYS = 30;
 const IMPACTO_STAGE_ID = 10;
 const EJECUTADO_STAGE_ID = 6;
 
-// Resuelve la fila (fusionada) y el año usado para ordenar cronológicamente.
-// Mismos nombres/agrupaciones que el gráfico de barras de Inf. Gerencial:
-// "Beca Trabajadores" (grupos 1 y 2) se junta en una sola fila 2024, y
+// Resuelve la fila y el año usado para ordenar cronológicamente.
+// Mismos nombres/agrupaciones que el gráfico de barras de Inf. Gerencial.
+// Desde el 22-sep-2026 Beca Trabajadores viene por año desde la tabla grupo
+// ("7 - Beca Trabajadores 2024/2025/2026"), así que toma la rama general.
 // MiBeca (grupo 6) se etiqueta como 2021 aunque tenga becas de otros períodos.
 function resolverGrupoDisplay(grupoId: number, descripcion: string): { key: string; label: string; sortYear: number } {
-    if (grupoId === 1 || grupoId === 2) {
-        return { key: 'trabajadores-2024', label: 'Beca Trabajadores 2024', sortYear: 2024 };
-    }
     if (grupoId === 6) {
         return { key: 'mibeca-2021', label: 'MiBeca 2021', sortYear: 2021 };
     }

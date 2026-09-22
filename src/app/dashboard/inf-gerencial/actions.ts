@@ -120,7 +120,7 @@ function grupoBaseProyecto(descripcion: string): string {
     const base = descripcion.replace(/ - Eje.*/i, '').replace(/^Actíva-T/, 'Activa-T').trim();
     // Unir "Sectorial 2026" + "Propuestas Sectorial" en una sola barra "Eje Sectorial 2026"
     // (conserva el "2026" para mantener el asterisco de "en curso" y el orden por año).
-    if (/^(Sectorial 2026|Propuestas Sectorial)$/i.test(base)) return 'Eje Sectorial 2026';
+    if (/^(Sectorial 2026|Propuestas Sectorial( 2026)?)$/i.test(base)) return 'Eje Sectorial 2026';
     return base;
 }
 
@@ -133,12 +133,14 @@ function grupoBaseBeca(descripcion: string): string {
         .trim();
 }
 
-// Beca Trabajadores (grupos 1, 2 y 3 - variantes 2024/2025/2026) se junta
-// en una sola barra 2024; MiBeca (grupo 6, con becas de varios períodos)
-// se junta en una sola barra 2021. Mismo criterio que ServiciosTimeline.
+// Beca Trabajadores viene por año desde la tabla grupo ("7 - Beca Trabajadores
+// 2024/2025/2026", desde el 22-sep-2026) y conserva el prefijo "Beca" para no
+// confundirse con los proyectos "Apoyo a Trabajadores"; MiBeca (grupo 6, con
+// becas de varios períodos) se junta en una sola barra 2021. Mismo criterio
+// que ServiciosTimeline.
 function labelBeca(grupoId: number, descripcion: string): string {
-    if ([1, 2, 3].includes(grupoId)) return 'Beca Trabajadores 2024';
     if (grupoId === 6) return 'MiBeca 2021';
+    if (/Beca Trabajadores/i.test(descripcion)) return descripcion.replace(/^\d+\s*-\s*/, '').trim();
     return grupoBaseBeca(descripcion);
 }
 
