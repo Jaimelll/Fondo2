@@ -52,8 +52,16 @@ export default function GestionServiciosTable({
   const [selectedLinea, setSelectedLinea] = useState('all');
   const [selectedModalidad, setSelectedModalidad] = useState('all');
   const [selectedCondicion, setSelectedCondicion] = useState('all');
+  const [selectedPeriodo, setSelectedPeriodo] = useState('all');
   // Multi-selección: la lista vacía significa "todos", igual que el 'all' de los <select>
   const [selectedGrupos, setSelectedGrupos] = useState<string[]>([]);
+
+  // Periodos disponibles, derivados de los datos (más reciente primero)
+  const periodos = useMemo(() => {
+    const set = new Set<number>();
+    initialData.forEach(item => { if (item.periodo != null) set.add(Number(item.periodo)); });
+    return Array.from(set).sort((a, b) => b - a);
+  }, [initialData]);
   const [searchId, setSearchId] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -90,9 +98,12 @@ export default function GestionServiciosTable({
       // 8. Exact ID filter
       const matchesId = !searchId || String(item.id) === String(searchId);
 
-      return matchesSearch && matchesEtapa && matchesEje && matchesLinea && matchesModalidad && matchesCondicion && matchesGrupo && matchesId;
+      // 9. Periodo filter
+      const matchesPeriodo = selectedPeriodo === 'all' || String(item.periodo) === String(selectedPeriodo);
+
+      return matchesSearch && matchesEtapa && matchesEje && matchesLinea && matchesModalidad && matchesCondicion && matchesGrupo && matchesId && matchesPeriodo;
     });
-  }, [initialData, searchTerm, selectedEtapa, selectedEje, selectedLinea, selectedModalidad, selectedCondicion, selectedGrupos, searchId]);
+  }, [initialData, searchTerm, selectedEtapa, selectedEje, selectedLinea, selectedModalidad, selectedCondicion, selectedGrupos, searchId, selectedPeriodo]);
 
   // Excel Export
   const downloadExcel = () => {
@@ -106,6 +117,7 @@ export default function GestionServiciosTable({
       'ID': item.id,
       'Documento': item.documento || '',
       'Nombre': item.nombre || '',
+      'Periodo': item.periodo ?? '',
       'Institución': item.institucion?.descripcion || '',
       'Eje': item.eje?.descripcion || '',
       'Línea': item.linea?.descripcion || '',
@@ -218,7 +230,20 @@ export default function GestionServiciosTable({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-3">
+          {/* Periodo Filter */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-1">Periodo</label>
+            <select
+              className="w-full h-9 px-3 py-1 text-[11px] border border-gray-200 rounded-lg focus:outline-none"
+              value={selectedPeriodo}
+              onChange={(e) => setSelectedPeriodo(e.target.value)}
+            >
+              <option value="all">Todos los Periodos</option>
+              {periodos.map((p) => <option key={p} value={String(p)}>{p}</option>)}
+            </select>
+          </div>
+
           {/* Grupo Filter — multi-selección con checkboxes, igual que en Servicios */}
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-1">Grupo</label>

@@ -12,7 +12,7 @@ import { descontarDeArrastre } from "@/lib/arrastre-server";
 
 const BECA_BASE_SELECT = `
   select
-    b.id, b.nombre, b.documento, b.eje_id, b.linea_id, b.etapa_id, b.modalidad_id,
+    b.id, b.nombre, b.documento, b.periodo, b.eje_id, b.linea_id, b.etapa_id, b.modalidad_id,
     b.institucion_id, b.condicion_id, b.grupo_id, b.presupuesto, b.avance, b.beneficiarios,
     b.provincia_procedencia, b.distrito_procedencia, b.celular, b.correo_electronico,
     b.tipo_estudio_id, b.naturaleza_ie_id, b.especialidad, b.formato_id,
