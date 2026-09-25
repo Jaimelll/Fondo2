@@ -82,3 +82,6 @@ prueba_archivo/
 
 servidor_*.tar
 supabase_export_*/
+
+# respaldos que baja scripts/bajar-del-servidor.ps1
+/respaldos_locales/
