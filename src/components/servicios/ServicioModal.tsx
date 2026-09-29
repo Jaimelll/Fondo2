@@ -1,13 +1,16 @@
 "use client";
 
 import React, { useState, useEffect, ChangeEvent, FormEvent } from "react";
-import { X, Save, Plus, History, Edit2, Trash2 } from "lucide-react";
-import { 
-    addAvanceServicio, 
-    updateAvanceServicio, 
-    deleteAvanceServicio 
+import Link from "next/link";
+import { X, Save, Plus, History, Edit2, Trash2, Wallet } from "lucide-react";
+import {
+    addAvanceServicio,
+    updateAvanceServicio,
+    deleteAvanceServicio,
+    getCuentaPresupuestoBeca
 } from "@/app/dashboard/gestion-servicios/actions";
 import { acumuladosPorEvento, arrastreVigente, esArrastre, extraerOrdenPago } from "@/lib/pagos";
+import CuentaPresupuestoTab, { type CuentaPresupuesto } from "./CuentaPresupuestoTab";
 
 interface ServicioModalProps {
     isOpen: boolean;
@@ -74,7 +77,11 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
-    const [activeTab, setActiveTab] = useState<'general' | 'becario' | 'avances'>('general');
+    const [activeTab, setActiveTab] = useState<'general' | 'becario' | 'cuenta' | 'avances'>('general');
+    // Cuenta, presupuesto y líneas de OP de la beca (solo en Gestión de Servicios, no en modo lectura).
+    const [cuentaData, setCuentaData] = useState<CuentaPresupuesto | null>(null);
+    const [cuentaCargando, setCuentaCargando] = useState(false);
+    const [cuentaError, setCuentaError] = useState<string | null>(null);
     const [editingAvance, setEditingAvance] = useState<any>(null);
     const [newAvance, setNewAvance] = useState({
         etapa_id: "",
@@ -152,6 +159,20 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
             setErrorMsg(null);
         }
     }, [servicio, isOpen]);
+
+    useEffect(() => {
+        const becaId = servicio?.id;
+        setCuentaData(null);
+        setCuentaError(null);
+        if (!isOpen || !becaId || isReadOnly) return;
+        let vigente = true;
+        setCuentaCargando(true);
+        getCuentaPresupuestoBeca(Number(becaId))
+            .then((d) => { if (vigente) setCuentaData(d as CuentaPresupuesto); })
+            .catch((e) => { if (vigente) setCuentaError(e?.message ?? 'No se pudo cargar la cuenta y el presupuesto.'); })
+            .finally(() => { if (vigente) setCuentaCargando(false); });
+        return () => { vigente = false; };
+    }, [servicio?.id, servicio?.avances?.length, isOpen, isReadOnly]);
 
     if (!isOpen) return null;
 
@@ -333,6 +354,15 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                         <Plus className="w-4 h-4" />
                         Información del Becario
                     </button>
+                    {servicio?.id && !isReadOnly && (
+                        <button
+                            onClick={() => setActiveTab('cuenta')}
+                            className={`flex items-center gap-2 px-6 py-3 text-sm font-bold transition-all ${activeTab === 'cuenta' ? 'text-blue-600 border-b-2 border-blue-600 bg-white' : 'text-gray-400 hover:text-gray-600'}`}
+                        >
+                            <Wallet className="w-4 h-4" />
+                            Cuenta y Presupuesto
+                        </button>
+                    )}
                     {servicio && (
                         <button 
                             onClick={() => setActiveTab('avances')}
@@ -547,6 +577,8 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                                 </div>
                             </div>
                         </form>
+                    ) : activeTab === 'cuenta' ? (
+                        <CuentaPresupuestoTab datos={cuentaData} cargando={cuentaCargando} error={cuentaError} />
                     ) : activeTab === 'becario' ? (
                         <form id="becario-form" onSubmit={handleSubmit} className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
                             {/* Grupo: Ubicación y Contacto */}
@@ -826,9 +858,24 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                                                             ) : (
                                                                 <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-black uppercase tracking-wide">Pago</span>
                                                             )}
-                                                            {extraerOrdenPago(av.sustento) && (
-                                                                <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">{extraerOrdenPago(av.sustento)}</span>
-                                                            )}
+                                                            {(() => {
+                                                                // Evento enlazado a una línea de OP de becas: chip con OP y concepto que abre la OP.
+                                                                const linea = cuentaData?.lineas.find((l: any) => Number(l.avance_beca_id) === Number(av.id));
+                                                                if (linea) {
+                                                                    return (
+                                                                        <Link
+                                                                            href={`/dashboard/gestion-servicios/ordenes-pago/${linea.orden_pago_id}`}
+                                                                            className="px-1.5 py-0.5 rounded bg-blue-600 text-white font-bold hover:bg-blue-700"
+                                                                            title="Abrir la orden de pago"
+                                                                        >
+                                                                            OP {linea.numero} · {linea.concepto}
+                                                                        </Link>
+                                                                    );
+                                                                }
+                                                                return extraerOrdenPago(av.sustento) ? (
+                                                                    <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">{extraerOrdenPago(av.sustento)}</span>
+                                                                ) : null;
+                                                            })()}
                                                             <span className="text-gray-500">Parcial <b className="text-gray-800">{formatCurrency(av.monto)}</b></span>
                                                             <span className="text-gray-500">Acumulado <b className="text-blue-700">{formatCurrency(acumulados.get(av.id) ?? 0)}</b></span>
                                                         </div>
@@ -933,7 +980,7 @@ export default function ServicioModal({ isOpen, onClose, onSave, onDataChange, s
                 )}
 
                 {/* Footer General */}
-                {activeTab !== 'avances' && (
+                {(activeTab === 'general' || activeTab === 'becario') && (
                     <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
                         <button
                             type="button"

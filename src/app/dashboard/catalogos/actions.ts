@@ -137,11 +137,12 @@ export async function getFilas(tabla: string): Promise<Record<string, any>[]> {
     await assertPuedeVer();
     assertTabla(tabla);
     const { rows } = await query(`select * from ${ident(tabla)}`);
-    // pg devuelve date/timestamp como Date; el editor espera strings.
+    // pg devuelve date/timestamp como Date y los text[] como arrays; el editor
+    // espera strings (los arrays se editan como texto separado por comas).
     return rows.map((r) => {
         const out: Record<string, any> = {};
         for (const [k, v] of Object.entries(r)) {
-            out[k] = v instanceof Date ? formatFecha(v) : v;
+            out[k] = v instanceof Date ? formatFecha(v) : Array.isArray(v) ? v.join(', ') : v;
         }
         return out;
     });
@@ -228,6 +229,9 @@ function esNumerico(type: string) {
 function esBooleano(type: string) {
     return /bool/i.test(type);
 }
+function esArreglo(type: string) {
+    return /^ARRAY$/i.test(type);
+}
 
 /** Limpia un payload según el tipo de cada columna (""→null, "5"→5, etc.). */
 function coerce(
@@ -241,6 +245,12 @@ function coerce(
         if (!col) continue; // ignora columnas desconocidas (anti-inyección)
         if (esBooleano(col.type)) {
             out[k] = Boolean(raw);
+            continue;
+        }
+        if (esArreglo(col.type)) {
+            // text[] (p. ej. concepto_beca.codigos_anexo): "A, B" → ['A', 'B']
+            const lista = Array.isArray(raw) ? raw : String(raw ?? '').split(',');
+            out[k] = lista.map((x) => String(x).trim()).filter(Boolean);
             continue;
         }
         const s = raw === null || raw === undefined ? '' : String(raw).trim();

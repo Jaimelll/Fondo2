@@ -15,8 +15,9 @@ import {
     getFormatos,
     getEmpresas
 } from "./actions";
+import Link from "next/link";
 import GestionServiciosTable from "@/components/servicios/GestionServiciosTable";
-import { FolderHeart } from "lucide-react";
+import { FolderHeart, Receipt } from "lucide-react";
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -68,6 +69,13 @@ export default async function GestionServiciosPage() {
                         </p>
                     </div>
                 </div>
+                <Link
+                    href="/dashboard/gestion-servicios/ordenes-pago"
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-700 text-white rounded-lg transition-colors text-sm font-bold"
+                >
+                    <Receipt className="w-4 h-4" />
+                    Órdenes de pago
+                </Link>
             </div>
 
             <div className="bg-gray-50/50 p-4 rounded-2xl border border-gray-100">

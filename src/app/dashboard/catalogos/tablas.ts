@@ -32,6 +32,8 @@ export const TABLAS = [
     'finanzas_anual',
     'saldo_bancario',
     'auditoria_eeff_historico',
+    'bancos',
+    'concepto_beca',
 ] as const;
 
 export type Tabla = (typeof TABLAS)[number];
@@ -56,6 +58,8 @@ const ETIQUETAS: Record<string, string> = {
     finanzas_anual: 'Finanzas Anuales (Rubros)',
     saldo_bancario: 'Saldos Bancarios (por banco)',
     auditoria_eeff_historico: 'Auditoría EEFF (Gastos y Colaboradores)',
+    bancos: 'Bancos',
+    concepto_beca: 'Conceptos de beca',
 };
 
 /** Etiqueta legible para una tabla ("tipo_estudio" → "Tipo Estudio"). */
@@ -86,6 +90,8 @@ export const ORDEN_FILAS: Record<string, string[]> = {
     presupuesto_anual_comparativo: ['año', 'unidad_operativa_id'],
     saldo_bancario: ['año', 'banco'],
     auditoria_eeff_historico: ['anio'],
+    bancos: ['codigo_cci'],
+    concepto_beca: ['orden', 'codigo'],
 };
 
 /**
@@ -115,6 +121,26 @@ const MESES: { value: number; label: string }[] = [
 ];
 
 export const COLUMNAS_COMBO: Record<string, Record<string, ComboConfig>> = {
+    institucion: {
+        // Banco de la cuenta de la IE (abono directo en las OP de becas).
+        banco_id: { tabla: 'bancos', valor: 'id', etiqueta: 'nombre' },
+    },
+    concepto_beca: {
+        tipo: {
+            estatico: [
+                { value: 'ACADEMICO', label: 'Académico' },
+                { value: 'NO_ACADEMICO', label: 'No académico' },
+                { value: 'INCENTIVO', label: 'Incentivo' },
+                { value: 'TITULACION', label: 'Titulación' },
+            ],
+        },
+        abono_por_defecto: {
+            estatico: [
+                { value: 'IE', label: 'IE (abono a la institución)' },
+                { value: 'BECARIO', label: 'Becario (abono o reembolso)' },
+            ],
+        },
+    },
     informe_impacto: {
         // Sin filtro por `tipo`: la misma tabla guarda los informes de Proyectos
         // (grupo.tipo = 2) y los de Servicios/Becas (grupo.tipo = 1). Cada línea
