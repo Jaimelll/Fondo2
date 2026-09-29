@@ -39,7 +39,7 @@ echo "   Tablas a refrescar: ${#OBJ[@]} de ${#TABLAS[@]}"
 # antes de restaurar para que el COPY no falle por columnas que el dump ya trae
 # (p. ej. avance_*.informe_impacto_id, que dejo vacias las tablas de avances).
 echo "2b/6 Aplicando migraciones de esquema pendientes..."
-for m in scripts/migration_impacto_avance.sql; do
+for m in scripts/migration_impacto_avance.sql scripts/migration_becas_pagos.sql; do
   [[ -f "$m" ]] && docker compose exec -T db psql -U fondo2 -d fondo2 -v ON_ERROR_STOP=1 -q < "$m"
 done
 
