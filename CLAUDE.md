@@ -117,6 +117,88 @@ Convenciones (helpers en `src/lib/pagos.ts`, sin columnas nuevas):
 - El sustento narrativo de `proyectos.sustento` lo define el último evento que
   **no** sea un pago ni arrastre.
 
+## Órdenes de pago de becas
+
+Desde el 2026-09-29 (encargo «tablas de becas para el skill pago-becas»). Las OP de
+becas son registros propios; `avance_beca` sigue siendo la bitácora de la que sale el
+avance, y cada línea pagada queda enlazada a su evento.
+
+### Modelo de datos (`scripts/migration_becas_pagos.sql`)
+
+- **Catálogos**: `bancos` (por los 3 primeros dígitos del CCI), `concepto_beca`
+  (código canónico + `codigos_anexo`, los alias `OTR-000x-…` que cambian por
+  convocatoria) y columnas de pago en `institucion` (RUC, convenio, banco, cuenta, CCI).
+  La cuenta contable 4699xxxx NO va en `institucion`: cambia por convocatoria y va en
+  la línea de la OP.
+- **Gestión de Servicios**: `becas_nueva.codigo_convenio` / `codigo_interno`;
+  `beca_cuenta` (una vigente por beca + historial, `cci_valido`); `beca_presupuesto`
+  (programado por beca y concepto); `beca_orden_pago` (cabecera) y
+  `beca_orden_pago_detalle` (una línea por fila del Anexo 02, `avance_beca_id` único).
+- `v_beca_saldo`: programado − Σ líneas PAGADA. El ejecutado y el saldo no se guardan.
+- Un comprobante no se reembolsa dos veces (índice `beca_opd_comprobante_uq`).
+
+### Estados
+
+- OP: `GENERADA → ENVIADA → EN_TESORERIA → PENDIENTE_FIRMA → PAGADA`, más `OBSERVADA`
+  y `ANULADA`. PAGADA solo con «Registrar pago ejecutado»; ANULADA solo si no hay
+  líneas pagadas.
+- Línea: `PENDIENTE → PAGADA | RECHAZADA | ANULADA`. Una rechazada se vuelve a pagar
+  en otra OP.
+
+### Flujo con pago-becas y pagos-eli
+
+1. Servicios manda el BD de becarios y el Anexo 02 → `SistemaPagos\06_Datos\Becas\`.
+2. Maestros (una vez por convocatoria): cuentas, presupuesto y códigos con los
+   generadores de `scripts/oneoff/` → `scripts/data_becas_*.sql` + CSV de discrepancias
+   en `respaldos_locales/` (nunca se corrige en silencio).
+3. pago-becas valida el Anexo, emite Informe Previo / Informe de Pago / OP y registra
+   la OP (pantalla «Importar Anexo 02» o script). Queda EN_TESORERIA con líneas PENDIENTE.
+4. pagos-eli arma el TXT del BBVA desde las líneas; la OP guarda `dia_pago`/`txt_archivo`.
+5. Ejecutado el pago: «Registrar pago ejecutado» (fecha de ejecución + N° de orden del
+   banco) → líneas PAGADA, un evento en `avance_beca` por línea con sustento
+   `OP 205-UPS-AS - S/ 822.26` y recálculo de avance/etapa (`recalcularEtapasBecas`).
+   Es idempotente: si la beca ya tiene un evento de esa OP con ese monto, lo enlaza.
+
+### Pantallas
+
+- `/dashboard/gestion-servicios/ordenes-pago` (lista, filtros, Excel), `/[id]` (detalle,
+  cuadre, acciones) e `/importar` (Anexo 02 con vista previa). Las acciones viven en
+  `gestion-servicios/actions.ts`, validan el módulo Gestión de Servicios y escriben con
+  `withAuditUser`.
+- Modal del becario: pestaña «Cuenta y Presupuesto» (solo en Gestión de Servicios, no
+  en modo lectura) y chip «OP n · CONCEPTO» en los eventos enlazados.
+- Catálogos: «Bancos» y «Conceptos de beca». Los `text[]` se editan como texto separado
+  por comas.
+
+### Reglas de validación (`src/lib/becas-validacion.ts`, `src/lib/anexo02.ts`)
+
+- CCI de 20 dígitos; el dígito 19 controla las posiciones 1-6 y el 20 las 7-18 (pesos
+  1,2,1,2…, se suman los dígitos de productos ≥ 10, DC = (10 − suma mod 10) mod 10).
+  El banco sale del CCI: si el Anexo dice otro banco, manda el CCI.
+- Abono a IE → RUC (tipo R) con la cuenta de la IE; reembolso o no académico → DNI (tipo L)
+  del titular. Nombre en mayúsculas, sin comas (el BBVA rechazó la OP 196 por una coma).
+- Anexo 02: solo filas VISIBLES; se ignoran hojas ocultas y copias de la muestra (columna
+  ALEATORIO); encabezados por nombre; una fila sin cuenta hereda la de la anterior.
+- Monto ≤ saldo del concepto (alerta), beca Activa, Σ líneas = importe de la OP.
+- Trampas vistas: Anexos con el DNI del AVAL en vez del becario (OP 206 Llicán, OP 209
+  Loayza); número de tarjeta en «cuenta bancaria»; glosas con el periodo equivocado.
+
+### Carga inicial (2026-09-29, Supéra-T 2025 I y II)
+
+- Presupuesto 2025-II: conceptos del PPTO programado + ACADÉMICOS del bloque «REG. ADM.»
+  (así Σ = `becas_nueva.presupuesto`). 2025-I: solo ACADÉMICOS (el BD no desglosa los no
+  académicos). Faltan los BD de Supéra-T 2026, Beca Trabajadores y MiBeca.
+- Histórico: 78 OP / 1,360 líneas reconstruidas desde `avance_beca` sin crear eventos;
+  328 líneas con concepto por defecto (anotado en `observacion`).
+- Verificación: `scripts/verifica_becas_pagos.sql` (correr en local y en el servidor).
+
+### OJO al refrescar datos
+
+`bajar-fondo2.sh` y `actualizar_bd_servidor.sh` hacen `TRUNCATE … CASCADE` de
+`becas_nueva`/`avance_beca`: arrastran a las tablas `beca_*` que las referencian. Si el
+dump de origen no trae esas tablas (p. ej. un servidor sin la migración), hay que volver
+a aplicar los `scripts/data_becas_*.sql` después.
+
 ## Sincronizar con el original (sistema-activa-t)
 
 - El original está como remote `activa` en este repo (`git fetch activa main`).
@@ -141,7 +223,13 @@ Convenciones (helpers en `src/lib/pagos.ts`, sin columnas nuevas):
 - [ ] Raíz del repo con ~100 scripts one-off (import/check/verify) — mover a
       `scripts/oneoff/` o ignorar.
 - [ ] ~200 usos de `any` en `src/`.
-- [ ] Catálogos cacheados 1h vía `unstable_cache`; falta invalidación desde
-      el módulo Catálogos.
+- [x] Catálogos cacheados 1h vía `unstable_cache`; el módulo Catálogos invalida
+      el tag `catalogos` en cada escritura (`invalidarCatalogos`).
+- [ ] Hydration mismatch en `GestionServiciosTable` (formato de fechas/números en
+      las filas; visto el 2026-09-29, previo a las órdenes de pago).
+- [ ] `recalculateBecaAvance` suma en JS con floats: `becas_nueva.avance` puede quedar
+      como 11726.619999999999. Redondear a 2 decimales.
+- [ ] La importación del Anexo 02 no empareja por nombre cuando el Anexo trae el DNI
+      del aval (queda como error y hay que corregir el Anexo).
 - [ ] Sin tests ni CI.
 - [ ] Sin sistema de migraciones (schema.sql + auth_schema.sql aplicados a mano).
