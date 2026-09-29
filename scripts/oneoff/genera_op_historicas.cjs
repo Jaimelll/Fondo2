@@ -149,7 +149,9 @@ function leerEstados() {
   for (const n of [...porOP.keys()].sort((a, b) => a - b)) {
     const evs = porOP.get(n);
     const codigo = `${n}-UPS-AS/FE-${ANIO}`;
-    if (ya.some((o) => Number(o.numero) === n && Number(o.anio) === ANIO)) { resumen.push(`OP ${n}: ya existe en beca_orden_pago, se omite`); continue; }
+    // Aunque la OP ya exista en esta base, se genera igual: el SQL es idempotente y el mismo
+    // script tiene que servir para otra base (p. ej. el servidor).
+    if (ya.some((o) => Number(o.numero) === n && Number(o.anio) === ANIO)) resumen.push(`OP ${n}: ya existe en esta base (el SQL no la duplica)`);
     const est = estados.get(n);
     const obsCab = [`Reconstruida el ${FECHA} desde ${evs.length} evento(s) de avance_beca (carga histórica, sin crear eventos).`];
     const refs = [...new Set(evs.map((e) => e.ref))];
@@ -166,6 +168,7 @@ function leerEstados() {
     for (const e of evs) {
       const obs = [];
       let concepto = 'ACADEMICOS', tipo = null, fila = null;
+      let enSaldo = true; // false = concepto no determinado: no descuenta del saldo (opción B, 29/09/2026)
       if (e.ref !== `OP ${n}-UPS-AS`) obs.push(`Sustento con referencia «${e.ref}».`);
       const bdBeca = bds.find((x) => x.grupo === e.grupo);
       const bl = bdBeca?.porOP.get(n) ?? null;
@@ -185,11 +188,13 @@ function leerEstados() {
             // pagos de varias OP): el concepto no se puede determinar → regla del encargo.
             concepto = concepto === 'ACADEMICOS' ? 'ACADEMICOS' : 'SUBVENCION';
             conceptoDefecto++;
+            enSaldo = false;
             obs.push(`Concepto no determinado: en el BD el bloque de la OP ${n} trae S/ ${vTot.toFixed(2)}${vInc ? ` + incentivos S/ ${vInc.toFixed(2)}` : ''} para este becario; se registra como ${concepto} según el tipo del bloque.`);
           }
         } else obs.push('El becario no está en el BD de su convocatoria.');
       } else {
         conceptoDefecto++;
+        enSaldo = false;
         obs.push(`Concepto no determinado (${bdBeca ? 'la OP no tiene bloque en el BD' : 'sin BD de la convocatoria'}): se registra como ACADEMICOS.`);
       }
       if (!tipo) {
@@ -220,7 +225,8 @@ function leerEstados() {
       if (cci && cci.length !== 20) { obs.push(`CCI del BD: ${cci}.`); cci = null; }
       if (cuenta && soloDigitos(cuenta).length === 16 && /^[45]/.test(soloDigitos(cuenta))) cuenta = null;
       if (cci && !validarCCI(cci).valido) obs.push('CCI del BD con dígitos de control no válidos.');
-      lineas.push({ e, concepto, tipo, benef: normalizarNombreBanco(benef), doc, docTipo, cci, cuenta, cuentaContable, obs });
+      if (!enSaldo) obs.push('No descuenta del saldo por concepto hasta tener el desglose.');
+      lineas.push({ e, concepto, tipo, benef: normalizarNombreBanco(benef), doc, docTipo, cci, cuenta, cuentaContable, obs, enSaldo });
     }
 
     const tipos = new Set(lineas.map((l) => l.tipo));
@@ -245,9 +251,9 @@ values (${sql(codigo)}, ${n}, ${ANIO}, ${sql(f.fecha)}, ${sql(informe)}, ${grupo
 on conflict (codigo) do nothing;`;
     const det = lineas.map((l) => `insert into public.beca_orden_pago_detalle
   (orden_pago_id, beca_id, concepto_id, institucion_id, cuenta_contable, tipo_abono, beneficiario_nombre, beneficiario_doc_tipo,
-   beneficiario_doc, banco_id, numero_cuenta, cci, monto, estado, avance_beca_id, observacion)
+   beneficiario_doc, banco_id, numero_cuenta, cci, monto, estado, avance_beca_id, cuenta_en_saldo, observacion)
 select op.id, ${l.e.beca_id}, ${conceptoId[l.concepto]}, ${l.e.institucion_id ?? 'null'}, ${sql(l.cuentaContable)}, ${sql(l.tipo)}, ${sql(l.benef)}, ${sql(l.docTipo)},
-  ${sql(l.doc) === 'null' ? "''" : sql(l.doc)}, ${l.cci ? bancoId(l.cci) ?? 'null' : 'null'}, ${sql(l.cuenta)}, ${sql(l.cci)}, ${l.e.monto.toFixed(2)}, 'PAGADA', ${l.e.id}, ${sql(l.obs.join(' ') || null)}
+  ${sql(l.doc) === 'null' ? "''" : sql(l.doc)}, ${l.cci ? bancoId(l.cci) ?? 'null' : 'null'}, ${sql(l.cuenta)}, ${sql(l.cci)}, ${l.e.monto.toFixed(2)}, 'PAGADA', ${l.e.id}, ${l.enSaldo}, ${sql(l.obs.join(' ') || null)}
   from public.beca_orden_pago op
  where op.codigo = ${sql(codigo)}
    and exists (select 1 from public.avance_beca a where a.id = ${l.e.id} and a.beca_id = ${l.e.beca_id} and a.monto = ${l.e.monto.toFixed(2)})
@@ -268,7 +274,11 @@ select op.id, ${l.e.beca_id}, ${conceptoId[l.concepto]}, ${l.e.institucion_id ??
 -- ====================================================================
 `;
   const salida = path.join(RAIZ, 'scripts', `data_becas_op_historicas_${FECHA}.sql`);
-  fs.writeFileSync(salida, encabezado + bloquesSQL.join('\n\n') + '\n');
+  // Para bases donde el histórico ya se cargó antes de existir cuenta_en_saldo (opción B).
+  const cierre = `\n\n-- Líneas con concepto no determinado: no descuentan del saldo (re-aplicable).
+update public.beca_orden_pago_detalle set cuenta_en_saldo = false
+ where cuenta_en_saldo and estado = 'PAGADA' and observacion like '%Concepto no determinado%';\n`;
+  fs.writeFileSync(salida, encabezado + bloquesSQL.join('\n\n') + cierre);
   console.log('escrito', path.relative(RAIZ, salida));
   console.log(resumen.join('\n'));
   console.log(`\nOP: ${bloquesSQL.length} · líneas: ${lineasTot} · con concepto por defecto: ${conceptoDefecto} · eventos sin número de OP: ${sinNumero.length}`);

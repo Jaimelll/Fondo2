@@ -157,11 +157,16 @@ create unique index if not exists beca_opd_comprobante_uq
 create index if not exists beca_opd_beca_idx on public.beca_orden_pago_detalle (beca_id);
 create index if not exists beca_opd_orden_idx on public.beca_orden_pago_detalle (orden_pago_id);
 
+-- Líneas que NO descuentan del saldo por concepto: pagos históricos cuyo concepto no se
+-- pudo determinar (eventos de avance_beca que concentran varias OP). Siguen PAGADA y
+-- enlazadas a su evento; solo quedan fuera de v_beca_saldo hasta tener el desglose.
+alter table public.beca_orden_pago_detalle add column if not exists cuenta_en_saldo boolean not null default true;
+
 -- Saldo por becario y concepto (después de crear el detalle, del que depende).
 create or replace view public.v_beca_saldo as
 select p.beca_id, p.concepto_id, p.programado,
-       coalesce(sum(d.monto) filter (where d.estado = 'PAGADA'), 0) as ejecutado,
-       p.programado - coalesce(sum(d.monto) filter (where d.estado = 'PAGADA'), 0) as saldo
+       coalesce(sum(d.monto) filter (where d.estado = 'PAGADA' and d.cuenta_en_saldo), 0) as ejecutado,
+       p.programado - coalesce(sum(d.monto) filter (where d.estado = 'PAGADA' and d.cuenta_en_saldo), 0) as saldo
 from public.beca_presupuesto p
 left join public.beca_orden_pago_detalle d
        on d.beca_id = p.beca_id and d.concepto_id = p.concepto_id

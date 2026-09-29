@@ -517,7 +517,7 @@ export async function getCuentaPresupuestoBeca(becaId: number) {
       ), pag as (
         select concepto_id, sum(monto) as pagado
           from beca_orden_pago_detalle
-         where beca_id = $1 and estado = 'PAGADA'
+         where beca_id = $1 and estado = 'PAGADA' and cuenta_en_saldo
          group by concepto_id
       )
       select c.id as concepto_id, c.codigo, c.nombre,
@@ -533,7 +533,7 @@ export async function getCuentaPresupuestoBeca(becaId: number) {
     query(`
       select d.id, d.orden_pago_id, op.codigo, op.numero, op.estado as op_estado,
              op.fecha_emision::text as fecha_emision, d.estado, d.monto, d.avance_beca_id,
-             d.periodo_academico, c.codigo as concepto
+             d.periodo_academico, d.cuenta_en_saldo, c.codigo as concepto
         from beca_orden_pago_detalle d
         join beca_orden_pago op on op.id = d.orden_pago_id
         join concepto_beca c on c.id = d.concepto_id

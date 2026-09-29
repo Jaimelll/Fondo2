@@ -136,7 +136,7 @@ export default function CuentaPresupuestoTab({ datos, cargando, error }: { datos
                         </table>
                     </div>
                 )}
-                <p className="text-[10px] text-gray-400">Ejecutado = líneas de OP pagadas. «En trámite» = líneas de OP aún pendientes de pago.</p>
+                <p className="text-[10px] text-gray-400">Ejecutado = líneas de OP pagadas (sin los pagos históricos cuyo concepto no se pudo determinar). «En trámite» = líneas de OP aún pendientes de pago.</p>
             </section>
 
             {/* Órdenes de pago */}
@@ -151,7 +151,12 @@ export default function CuentaPresupuestoTab({ datos, cargando, error }: { datos
                                 <Link href={`/dashboard/gestion-servicios/ordenes-pago/${l.orden_pago_id}`} className="font-bold text-blue-700 hover:underline">
                                     OP {l.codigo}
                                 </Link>
-                                <span className="text-gray-500">{l.concepto}{l.periodo_academico ? ` · ${l.periodo_academico}` : ''}</span>
+                                <span className="text-gray-500">
+                                    {l.concepto}{l.periodo_academico ? ` · ${l.periodo_academico}` : ''}
+                                    {l.cuenta_en_saldo === false && (
+                                        <span className="ml-1 text-amber-700" title="Pago histórico sin desglose por concepto: no descuenta del saldo">· no descuenta del saldo</span>
+                                    )}
+                                </span>
                                 <span className="font-bold">{soles(l.monto)}</span>
                                 <EstadoBadge estado={l.estado} />
                             </li>
