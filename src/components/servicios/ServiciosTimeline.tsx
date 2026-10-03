@@ -39,6 +39,7 @@ const MARGIN_DAYS = 30;
 // nunca desde los avances registrados en Gestión de Servicios.
 // Inicio = primer informe que inicia; fin = PRIMER informe presentado.
 const IMPACTO_STAGE_ID = 10;
+const RESUELTO_STAGE_ID = 7;
 const EJECUTADO_STAGE_ID = 6;
 
 // Resuelve la fila y el año usado para ordenar cronológicamente.
@@ -149,6 +150,7 @@ export function ServiciosTimeline({ data, options, informesImpacto = [] }: Servi
                     totalBeneficiarios: 0,
                     count: 0,
                     maxStageId: 0,
+                    todasResueltas: true,
                     ids: [],
                 });
             }
@@ -161,6 +163,7 @@ export function ServiciosTimeline({ data, options, informesImpacto = [] }: Servi
             g.ids.push(beca.id);
 
             if ((beca.etapa_id || 0) > g.maxStageId) g.maxStageId = beca.etapa_id;
+            if (Number(beca.etapa_id) !== RESUELTO_STAGE_ID) g.todasResueltas = false;
 
             (beca.avances || []).forEach((av: any) => {
                 if (!av.fecha) return;
@@ -199,6 +202,12 @@ export function ServiciosTimeline({ data, options, informesImpacto = [] }: Servi
         const rowsRaw = Array.from(groupMap.values()).map(g => {
             const stageStart: Record<number, number> = {};
             const stageEnd: Record<number, number> = {};
+
+            // "Resuelto" es la salida individual de una beca (cancelada), no una
+            // fase del grupo: si entra en la cascada, una sola beca resuelta
+            // corta la barra de todo el grupo en esa fecha y oculta el fin
+            // proyectado. Solo se dibuja cuando TODAS las becas están resueltas.
+            if (!g.todasResueltas) delete g.stageDates[RESUELTO_STAGE_ID];
 
             stageOrder.forEach(sid => {
                 const dates = g.stageDates[sid];
